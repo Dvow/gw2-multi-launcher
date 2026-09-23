@@ -1381,12 +1381,15 @@ auto createWindow() {
                 SDL_WINDOW_HIDDEN),
         SDL_DestroyWindow);
     if (!window) throw std::runtime_error(SDL_GetError());
+#ifndef _WIN32
+    // Windows uses SDL's embedded ICO resource so the shell can select the matching size.
     const auto base = SDL_GetBasePath();
     if (!base) throw std::runtime_error(SDL_GetError());
     const auto iconFile = std::string(base) + "gw2-multi-launcher.png";
     auto icon = std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)>(
         SDL_LoadPNG(iconFile.c_str()), SDL_DestroySurface);
     if (!icon || !SDL_SetWindowIcon(window.get(), icon.get())) throw std::runtime_error(SDL_GetError());
+#endif
     SDL_SetWindowPosition(window.get(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     SDL_SetWindowHitTest(window.get(), hitTest, nullptr);
     return window;

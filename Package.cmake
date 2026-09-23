@@ -52,7 +52,6 @@ set(setup_dependencies gw2-multi-launcher ${native_targets}
 if(WIN32)
   install(TARGETS gw2-multi-launcher ${native_targets} RUNTIME DESTINATION . LIBRARY DESTINATION .)
   install(DIRECTORY "${steam_output}/" DESTINATION steam USE_SOURCE_PERMISSIONS)
-  install(FILES src/icons/gw2-multi-launcher.png DESTINATION .)
   install(FILES docs/README.md LICENSE "${notices}" DESTINATION .)
   find_program(GW2_ISCC NAMES ISCC.exe ISCC HINTS
     "${CMAKE_SOURCE_DIR}/build/tools/Inno Setup 7"
@@ -91,7 +90,6 @@ LicenseFile=@CMAKE_SOURCE_DIR@/LICENSE
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/GW2MultiLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/GW2MultiLauncher.Host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/GW2MultiLauncher.Native.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/gw2-multi-launcher.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@steam_output@/*"; DestDir: "{app}/steam"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "@CMAKE_SOURCE_DIR@/docs/README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_SOURCE_DIR@/LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -99,6 +97,7 @@ Source: "@CMAKE_BINARY_DIR@/ThirdPartyNotices.txt"; DestDir: "{app}"; Flags: ign
 
 [InstallDelete]
 Type: files; Name: "{app}\gw2-multi-launcher.bmp"
+Type: files; Name: "{app}\gw2-multi-launcher.png"
 Type: files; Name: "{app}\Gw2Launcher.exe"
 Type: files; Name: "{app}\Gw2Launcher.Host.exe"
 Type: files; Name: "{app}\Gw2Launcher.Native.dll"

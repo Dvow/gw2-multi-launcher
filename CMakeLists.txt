@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.30)
-project(GW2MultiLauncher VERSION 0.4.1 LANGUAGES C CXX)
+project(GW2MultiLauncher VERSION 0.4.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,8 +47,10 @@ set_property(TARGET imgui PROPERTY CXX_SCAN_FOR_MODULES OFF)
 file(READ "${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf" font HEX)
 string(REGEX REPLACE "(..)" "0x\\1," font "${font}")
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/font.hpp" CONTENT "inline constexpr unsigned char launcherFont[] = {${font}};\n")
-configure_file(src/icons/gw2-multi-launcher.png
-  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/gw2-multi-launcher.png" COPYONLY)
+if(NOT WIN32)
+  configure_file(src/icons/gw2-multi-launcher.png
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/gw2-multi-launcher.png" COPYONLY)
+endif()
 
 add_library(game STATIC)
 target_sources(game PUBLIC FILE_SET CXX_MODULES FILES src/game.cppm)
@@ -96,22 +98,41 @@ param([string]$Source, [string]$Destination)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $image = [Drawing.Image]::FromFile($Source)
-$bitmap = [Drawing.Bitmap]::new(256, 256)
-$graphics = [Drawing.Graphics]::FromImage($bitmap)
-$data = [IO.MemoryStream]::new()
+$sizes = 16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256
+$output = [IO.MemoryStream]::new()
+$writer = [IO.BinaryWriter]::new($output)
 try {
-    $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-    $graphics.DrawImage($image, 0, 0, 256, 256)
-    $bitmap.Save($data, [Drawing.Imaging.ImageFormat]::Png)
-    # One 256px, 32-bit PNG entry. Zero width/height bytes encode 256 in ICO.
-    $header = [byte[]](0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 32, 0) +
-        [BitConverter]::GetBytes([uint32]$data.Length) + [BitConverter]::GetBytes([uint32]22)
-    [IO.File]::WriteAllBytes($Destination, [byte[]]($header + $data.ToArray()))
+    $writer.Write([byte[]]((0, 0, 1, 0) + [BitConverter]::GetBytes([uint16]$sizes.Count)))
+    $output.SetLength(6 + 16 * $sizes.Count)
+    for ($i = 0; $i -lt $sizes.Count; ++$i) {
+        $size = $sizes[$i]
+        $bitmap = [Drawing.Bitmap]::new($size, $size)
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        $data = [IO.MemoryStream]::new()
+        try {
+            $graphics.CompositingMode = [Drawing.Drawing2D.CompositingMode]::SourceCopy
+            $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+            $graphics.DrawImage($image, 0, 0, $size, $size)
+            $bitmap.Save($data, [Drawing.Imaging.ImageFormat]::Png)
+            $offset = $output.Length
+            $output.Position = 6 + 16 * $i
+            # ICO encodes 256px as zero; each entry contains its own 32-bit PNG.
+            $dimension = $size % 256
+            $writer.Write([byte[]](($dimension, $dimension, 0, 0, 1, 0, 32, 0) +
+                [BitConverter]::GetBytes([uint32]$data.Length) + [BitConverter]::GetBytes([uint32]$offset)))
+            $output.Position = $offset
+            $writer.Write($data.ToArray())
+        } finally {
+            $data.Dispose()
+            $graphics.Dispose()
+            $bitmap.Dispose()
+        }
+    }
+    [IO.File]::WriteAllBytes($Destination, $output.ToArray())
 } finally {
-    $data.Dispose()
-    $graphics.Dispose()
-    $bitmap.Dispose()
+    $writer.Dispose()
+    $output.Dispose()
     $image.Dispose()
 }
 ]=])
