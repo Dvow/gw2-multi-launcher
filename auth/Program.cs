@@ -135,7 +135,7 @@ sealed class Session : IDisposable, IAuthenticator
     readonly SteamUser user;
     readonly Pipe pipe;
     readonly CancellationTokenSource stop;
-    readonly TaskCompletionSource connected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly TaskCompletionSource<bool> connected = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly TaskCompletionSource<SteamUser.LoggedOnCallback> loggedOn = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly TaskCompletionSource<EResult> disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
     SteamAuthTicket.TicketInfo? ticket;
@@ -147,7 +147,7 @@ sealed class Session : IDisposable, IAuthenticator
         this.stop = stop;
         callbacks = new(client);
         user = client.GetHandler<SteamUser>()!;
-        callbacks.Subscribe<SteamClient.ConnectedCallback>(_ => connected.TrySetResult());
+        callbacks.Subscribe<SteamClient.ConnectedCallback>(_ => connected.TrySetResult(true));
         callbacks.Subscribe<SteamClient.DisconnectedCallback>(_ => disconnected.TrySetResult(EResult.NoConnection));
         callbacks.Subscribe<SteamUser.LoggedOnCallback>(value => loggedOn.TrySetResult(value));
         callbacks.Subscribe<SteamUser.LoggedOffCallback>(value => disconnected.TrySetResult(value.Result));
@@ -168,7 +168,7 @@ sealed class Session : IDisposable, IAuthenticator
             while (!pipe.Token.IsCancellationRequested)
                 callbacks.RunWaitCallbacks(TimeSpan.FromMilliseconds(100));
         });
-        await Bounded(connected.Task.ContinueWith(_ => true, pipe.Token), 30);
+        await Bounded(connected.Task, 30);
     }
     void ShowQr(string url)
     {

@@ -338,29 +338,28 @@ struct NativeRequest {
     DWORD subscribe(HWND window) {
         if (table[16] != base + layout.anchors[12].rva || table[17] != base + layout.anchors[20].rva)
             return UnsupportedBuild;
-        if (!loginObserver.thread) {
-            HMODULE retained{};
-            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                    reinterpret_cast<const wchar_t *>(&LoginError), &retained)) {
-                request->exceptionCode = GetLastError();
-                return NativeFault;
-            }
-            for (auto &notification : loginNotifications)
-                notification = base + layout.anchors[14].rva;
-            loginNotifications[11] = reinterpret_cast<std::uintptr_t>(&LoginError);
-            loginObserver.table = loginNotifications;
-            loginObserver.thread = GetCurrentThreadId();
-            using Subscribe = void(__fastcall *)(void *, void *);
-            loginObserver.context = context;
-            loginObserver.unsubscribe = reinterpret_cast<Subscribe>(table[17]);
-            loginObserver.window = window;
-            if (!SetWindowSubclass(window, LoginWindow, 1, 0)) {
-                loginObserver = {};
-                return NativeFault;
-            }
-            reinterpret_cast<Subscribe>(table[16])(context, &loginObserver);
+        if (loginObserver.thread)
+            return loginObserver.thread == GetCurrentThreadId() ? Completed : InvalidTarget;
+        HMODULE retained{};
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<const wchar_t *>(&LoginError), &retained)) {
+            request->exceptionCode = GetLastError();
+            return NativeFault;
         }
-        if (loginObserver.thread != GetCurrentThreadId()) return InvalidTarget;
+        for (auto &notification : loginNotifications)
+            notification = base + layout.anchors[14].rva;
+        loginNotifications[11] = reinterpret_cast<std::uintptr_t>(&LoginError);
+        loginObserver.table = loginNotifications;
+        loginObserver.thread = GetCurrentThreadId();
+        using Subscribe = void(__fastcall *)(void *, void *);
+        loginObserver.context = context;
+        loginObserver.unsubscribe = reinterpret_cast<Subscribe>(table[17]);
+        loginObserver.window = window;
+        if (!SetWindowSubclass(window, LoginWindow, 1, 0)) {
+            loginObserver = {};
+            return NativeFault;
+        }
+        reinterpret_cast<Subscribe>(table[16])(context, &loginObserver);
         return Completed;
     }
     DWORD platformLogin(HWND window) {
@@ -581,9 +580,8 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
         *result = p->result;
         *flags = p->flags;
         *exceptionCode = p->exceptionCode;
-        SecureZeroMemory(p->email, sizeof(p->email));
-        SecureZeroMemory(p->password, sizeof(p->password));
-    } else if (!hook.value) {
+    }
+    if (!error || !hook.value) {
         SecureZeroMemory(p->email, sizeof(p->email));
         SecureZeroMemory(p->password, sizeof(p->password));
     }

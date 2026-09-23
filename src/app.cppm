@@ -351,11 +351,14 @@ class App {
     }
     void dispatch(Command &command, std::stop_token stop) {
         switch (command.action) {
-        case Action::settings:
+        case Action::settings: {
             if (running() && command.settings.gamePath != store_->catalog().gamePath)
                 throw std::runtime_error("Close your clients before changing the game installation.");
+            const bool check = command.settings.autoUpdate && !store_->catalog().autoUpdate;
             store_->settings(std::move(command.settings));
+            if (check) beginUpdate(false, stop);
             break;
+        }
         case Action::save:
             saveAccount(command, stop);
             break;
@@ -533,10 +536,10 @@ class App {
         if (state == 9) session.view.canShow = false;
         session.deadline = SDL_GetTicks() + (state == 2 ? 130000 : 100000);
         if (state == 8) {
-            const auto current = Image(path(store_->catalog().gamePath)).build();
-            if (current < wantedBuild_)
+            const Image image(path(store_->catalog().gamePath));
+            if (image.build() < wantedBuild_)
                 throw std::runtime_error("GW2's update did not reach the current build. Try again.");
-            (void)Image(path(store_->catalog().gamePath)).resolve();
+            (void)image.resolve();
             store_->updatePending(false);
         }
         if (state == 5 || state == 8) {

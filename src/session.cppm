@@ -13,6 +13,7 @@ module;
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #ifdef _WIN32
 #include <fcntl.h>
@@ -76,7 +77,6 @@ class SteamConnection {
     Secret outgoing_, incoming_;
     std::array<unsigned char, 4> header_{};
     std::size_t written_{}, received_{};
-    bool body_{};
 
   public:
     SteamConnection()
@@ -99,23 +99,21 @@ class SteamConnection {
     }
     std::optional<AuthMessage> poll() {
         process_.write(outgoing_, written_);
-        if (!body_) {
+        if (incoming_.bytes.empty()) {
             received_ += process_.read(std::span(header_).subspan(received_));
             if (received_ != header_.size()) return {};
             const auto size = number(header_);
             if (size < 4 || size > 65536) throw std::runtime_error("Invalid Steam helper response.");
             incoming_.bytes.resize(size);
-            body_ = true;
             received_ = 0;
         }
         received_ += process_.read(std::span(incoming_.bytes).subspan(received_));
         if (received_ != incoming_.bytes.size()) return {};
         const auto kind = number(incoming_.bytes);
-        body_ = false;
         received_ = 0;
         // Keep secret fields in a wiping buffer. Views remain valid only while
         // this message is alive, and are never published to presentation state.
-        return AuthMessage{kind, std::move(incoming_)};
+        return AuthMessage{kind, std::exchange(incoming_, Secret{})};
     }
 };
 
@@ -311,15 +309,8 @@ class SteamSession {
                 return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
             }))
             throw std::runtime_error("Invalid Steam ticket.");
-        auto name = utf16(displayName), value = utf16(hex);
-        auto &bytes = outgoing.bytes;
-        bytes.reserve(bytes.size() + 13 + name.bytes.size() + value.bytes.size());
-        bytes.push_back(3);
-        appendNumber(bytes, static_cast<unsigned>(8 + name.bytes.size() + value.bytes.size()));
-        appendNumber(bytes, static_cast<unsigned>(name.bytes.size() / 2 - 1));
-        appendNumber(bytes, static_cast<unsigned>(value.bytes.size() / 2 - 1));
-        bytes.insert(bytes.end(), name.bytes.begin(), name.bytes.end());
-        bytes.insert(bytes.end(), value.bytes.begin(), value.bytes.end());
+        outgoing.bytes.push_back(3);
+        tokenCredentials(outgoing.bytes, displayName, hex);
         stage = Stage::client;
     }
     void receiveSteam(const AuthMessage &message) {

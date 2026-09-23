@@ -56,9 +56,14 @@ void mutedText(const char *text) {
     ImGui::PopStyleColor();
 }
 void help(const char *text) {
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_NoSharedDelay |
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_NoSharedDelay |
             ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("%s", text);
+        return;
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24);
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
 }
 bool button(const char *text, float width = 0, ImVec4 color = {}) {
     if (color.w) {
@@ -179,6 +184,7 @@ void clippedText(const char *text, float width) {
     const ImVec2 end{pos.x + width, pos.y + ImGui::GetTextLineHeight()};
     ImGui::Dummy({width, end.y - pos.y});
     ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), pos, end, end.x, text, nullptr, nullptr);
+    if (ImGui::CalcTextSize(text).x > width) help(text);
 }
 template <std::size_t N>
 bool field(
@@ -235,7 +241,7 @@ struct Form {
     double changedAt{-1};
     bool rowsMoving{}, scrollToNew{};
     std::vector<std::string> selected;
-    std::string id, localError;
+    std::string id, localError, notifiedUpdate;
     std::array<char, 321> label{};
     std::array<char, 1281> email{};
     std::array<char, 1025> password{};
@@ -253,6 +259,10 @@ struct Form {
     std::shared_ptr<Picker> picker;
     unsigned pickerField{};
     ~Form() { wipe(password.data(), password.size()); }
+    void clearPassword() {
+        wipe(password.data(), password.size());
+        clearInputMemory();
+    }
     void navigate(Page target) {
         if (page == target) return;
         if ((page == Page::settings) != (target == Page::settings)) changedAt = ImGui::GetTime();
@@ -270,8 +280,7 @@ struct Form {
         }
         rowsMoving = true;
         scrollToNew = false;
-        wipe(password.data(), password.size());
-        clearInputMemory();
+        clearPassword();
         navigate(Page::accounts);
         removing = loading = edited = connected = false;
         id.clear();
@@ -341,10 +350,7 @@ struct Form {
             return;
         }
         if (pendingAction == Action::edit && snapshot.editId == id) assign(email, snapshot.editEmail);
-        if (pendingAction == Action::save) {
-            wipe(password.data(), password.size());
-            clearInputMemory();
-        }
+        if (pendingAction == Action::save) clearPassword();
         if ((pendingAction == Action::save && id.empty()) || pendingAction == Action::remove) close();
     }
     bool isSelected(const std::string &account) const {
@@ -505,6 +511,8 @@ void style(float scale) {
     s.Colors[ImGuiCol_PopupBg] = {0.078f, 0.094f, 0.114f, 1};
     s.Colors[ImGuiCol_Border] = {0.16f, 0.19f, 0.22f, 1};
     s.Colors[ImGuiCol_FrameBg] = {0.095f, 0.114f, 0.137f, 1};
+    s.Colors[ImGuiCol_TitleBg] = s.Colors[ImGuiCol_TitleBgActive] = s.Colors[ImGuiCol_FrameBg];
+    s.Colors[ImGuiCol_ModalWindowDimBg] = {0, 0, 0, 0.45f};
     s.Colors[ImGuiCol_FrameBgHovered] = {0.13f, 0.16f, 0.19f, 1};
     s.Colors[ImGuiCol_FrameBgActive] = {0.14f, 0.18f, 0.21f, 1};
     s.Colors[ImGuiCol_Text] = {0.90f, 0.93f, 0.95f, 1};
@@ -562,7 +570,7 @@ void qrCode(std::string_view bits, float width) {
     }
     ImGui::Dummy({count * cell, count * cell});
 }
-void steamChallenge(Form &form, const Snapshot::Authentication &auth, float width) {
+void signInChallenge(Form &form, const Snapshot::Authentication &auth, float width) {
     qrCode(auth.qr, width);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
     ImGui::TextWrapped("%s", auth.prompt.c_str());
@@ -585,21 +593,14 @@ void platformFields(Form &form, const Snapshot::Authentication &auth, float widt
         mutedText(auth.identity.c_str());
         ImGui::PopTextWrapPos();
     }
-    if (form.provider == Provider::epic) {
-        if (!matching || !auth.busy) {
-            if (button(matching && !auth.identity.empty() ? "Reconnect Epic" : "Sign in to Epic", 0,
-                    primaryColor))
-                form.request({.action = Action::connect, .id = form.id, .provider = Provider::epic});
-            return;
-        }
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
-        ImGui::TextWrapped("%s", auth.prompt.c_str());
-        ImGui::PopTextWrapPos();
-        if (iconButton(Icon::close, "Cancel sign-in")) form.request({.action = Action::cancelConnect});
+    if (matching && auth.busy) {
+        signInChallenge(form, auth, width);
         return;
     }
-    if (matching && auth.busy) {
-        steamChallenge(form, auth, width);
+    if (form.provider == Provider::epic) {
+        if (button(matching && !auth.identity.empty() ? "Reconnect Epic" : "Sign in to Epic", 0,
+                primaryColor))
+            form.request({.action = Action::connect, .id = form.id, .provider = Provider::epic});
         return;
     }
     if (form.steamPassword) {
@@ -615,8 +616,7 @@ void platformFields(Form &form, const Snapshot::Authentication &auth, float widt
             command.password = utf16(form.password.data());
         }
         form.request(std::move(command));
-        wipe(form.password.data(), form.password.size());
-        clearInputMemory();
+        form.clearPassword();
     }
     ImGui::SameLine();
     if (iconButton(form.steamPassword ? Icon::qr : Icon::password,
@@ -669,8 +669,7 @@ void accountFields(const Account *account, App &app, Form &form, const Snapshot 
         form.provider = static_cast<Provider>(i);
         form.edited = true;
         form.email.fill(0);
-        wipe(form.password.data(), form.password.size());
-        clearInputMemory();
+        form.clearPassword();
     }
     ImGui::PopStyleVar();
     if (form.provider == Provider::arenaNet) {
@@ -681,7 +680,7 @@ void accountFields(const Account *account, App &app, Form &form, const Snapshot 
         platformFields(form, state.auth, width);
     }
     form.edited |= rowField("Arguments", form.args, width, "e.g. -windowed -loadmapinfo");
-    help("Leave empty to use global arguments; matching arguments here override them.");
+    help("Global arguments apply unless overridden here.");
     if (account && form.removing) {
         removeAccount(form);
         return;
@@ -733,7 +732,6 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     const auto textWidth = available - (account ? 72 : 36) * scale;
     ImGui::SetCursorScreenPos(pos);
     clippedText(account ? account->label.c_str() : "Add account", textWidth);
-    help(account ? account->label.c_str() : "Add account");
     const auto statusY = pos.y + ImGui::GetTextLineHeightWithSpacing();
     ImGui::SetCursorScreenPos({pos.x, statusY});
     char pid[32]{};
@@ -749,7 +747,7 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     ImGui::PushStyleColor(ImGuiCol_Text, error ? errorColor : session.active ? accent : muted);
     clippedText(status, statusWidth);
     ImGui::PopStyleColor();
-    help(session.status.c_str());
+    if (error) help(session.status.c_str());
     if (pidWidth) {
         ImGui::SetCursorScreenPos({pos.x + statusWidth, statusY});
         mutedText(pid);
@@ -836,7 +834,7 @@ void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
     ImGui::BeginDisabled(busy);
     if (iconButton(form.page != Form::Page::settings ? Icon::settings : Icon::back,
             form.page == Form::Page::settings ? "Back to accounts"
-                : updateAvailable             ? "Settings — launcher update available"
+                : updateAvailable             ? "Settings · Update available"
                                               : "Settings")) {
         form.go(form.page != Form::Page::settings ? Form::Page::settings : Form::Page::accounts);
     }
@@ -850,7 +848,7 @@ void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
     ImGui::SetCursorPos(headerButton(1, width, scale).Min);
     if (iconButton(Icon::minimize, "Minimize")) SDL_MinimizeWindow(window);
     ImGui::SetCursorPos(headerButton(2, width, scale).Min);
-    if (iconButton(Icon::close, "Close launcher; keep games running")) form.go(Form::Page::exit);
+    if (iconButton(Icon::close, "Close launcher. Games keep running.")) form.go(Form::Page::exit);
     ImGui::SetCursorPos({14 * scale, headerHeight * scale});
     ImGui::Separator();
     ImGui::SetCursorPos({14 * scale, (headerHeight + 8) * scale});
@@ -892,7 +890,7 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
     if (closeAll) {
         ImGui::SameLine(0, iconSpacing * scale);
         ImGui::BeginDisabled(busy);
-        if (iconButton(Icon::closeAll, "Close all games (including unselected accounts)"))
+        if (iconButton(Icon::closeAll, "Close all running games"))
             form.request({.action = Action::closeAll});
         ImGui::EndDisabled();
     }
@@ -915,7 +913,7 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     pathField(form, window, "Game executable", form.game, 1, false, "Full path to Gw2-64.exe");
     form.edited |= field("Global arguments", form.args, "e.g. -windowed -loadmapinfo");
     form.edited |= ImGui::Checkbox("Hide sign-in window", &form.hide);
-    help("GW2 opens when sign-in needs attention. Game windows are always shown.");
+    help("Hide the GW2 sign-in window unless it needs your attention.");
     form.edited |= ImGui::Checkbox("Show PID", &form.showPid);
 #ifndef _WIN32
     ImGui::Spacing();
@@ -930,7 +928,7 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     ImGui::SeparatorText("Launcher updates");
     ImGui::TextDisabled("Version %s", appVersion.data());
     form.edited |= ImGui::Checkbox("Check automatically", &form.autoUpdate);
-    help("Check GitHub once when the launcher opens. Choose Update now to install an available update.");
+    help("Check for launcher updates each time you open the app.");
     const auto &update = state.update;
     const bool available = update.stage == UpdateStage::available;
     ImGui::BeginDisabled(update.busy());
@@ -944,6 +942,35 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     if (available) ImGui::TextDisabled("Version %s available", update.version.c_str());
     if (update.stage == UpdateStage::current) mutedText("Up to date");
     if (!update.error.empty()) ImGui::TextWrapped("%s", update.error.c_str());
+}
+
+void updatePrompt(Form &form, const Snapshot &state, bool busy) {
+    const auto &update = state.update;
+    if (update.stage == UpdateStage::available && form.notifiedUpdate != update.version && !busy &&
+        !state.auth.busy && !form.edited && form.page != Form::Page::account && !ImGui::IsAnyItemActive()) {
+        ImGui::OpenPopup("Update available");
+        form.notifiedUpdate = update.version;
+    }
+    const auto viewport = ImGui::GetMainViewport();
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, {0.5f, 0.5f});
+    ImGui::SetNextWindowSize({std::min(300 * scale, viewport->Size.x - 28 * scale), 0});
+    if (!ImGui::BeginPopupModal("Update available", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings))
+        return;
+    ImGui::TextWrapped("GW2 Multi %s is available.", update.version.c_str());
+    const bool running = std::ranges::any_of(state.sessions, &SessionView::active);
+    if (running) ImGui::TextWrapped("Close your games before updating.");
+    ImGui::BeginDisabled(busy || state.auth.busy || running);
+    if (button("Update now", 0, primaryColor)) {
+        form.openSettings(state.catalog);
+        form.request({.action = Action::installUpdate});
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (button("Later")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, bool &open) {
@@ -1004,6 +1031,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     ImGui::EndChild();
     ImGui::PopID();
     ImGui::PopStyleVar();
+    updatePrompt(form, state, busy);
     // Consume this frame's input before saving or acting on a navigation request.
     form.finish(app, state, open);
     ImGui::End();
