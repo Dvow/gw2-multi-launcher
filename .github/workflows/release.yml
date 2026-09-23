@@ -96,7 +96,11 @@ jobs:
             gh api "$release_api" \
               --jq '.tag_name as $tag | {tag_name, draft: false, prerelease, assets: [.assets[] | select(.name != "update.json") | {name, state, size, digest, browser_download_url: (.browser_download_url | sub("/download/[^/]+/"; "/download/" + $tag + "/"))}]}' \
               > build/release/update.json
-            gh release upload "$tag" build/release/update.json --clobber
+            metadata_id=$(gh api "$release_api/assets" --jq '.[] | select(.name == "update.json") | .id')
+            if [ -n "$metadata_id" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$metadata_id"
+            fi
+            gh release upload "$tag" build/release/update.json
           }
           version=$(sed -nE 's/^project\(GW2MultiLauncher VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p' CMakeLists.txt)
           test -n "$version"
