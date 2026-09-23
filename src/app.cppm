@@ -33,6 +33,7 @@ enum class Action {
     save,
     edit,
     remove,
+    reorder,
     launch,
     show,
     close,
@@ -49,7 +50,7 @@ enum class Action {
 struct Command {
     Action action{};
     std::uint64_t serial{};
-    std::string id{}, label{}, email{}, arguments{};
+    std::string id{}, label{}, email{}, arguments{}, beforeId{};
     std::vector<std::string> ids{};
     std::vector<std::string> dlls{};
     Secret password{};
@@ -409,6 +410,9 @@ class App {
             break;
         case Action::edit:
             editAccount(command, stop);
+            break;
+        case Action::reorder:
+            store_->reorder(command.id, command.beforeId);
             break;
         case Action::launch:
             queueLaunch(command, stop);

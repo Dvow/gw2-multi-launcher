@@ -384,6 +384,22 @@ class Store {
         std::erase_if(next.accounts, [&](const Account &a) { return a.id == id; });
         save(std::move(next));
     }
+    void reorder(std::string_view id, std::string_view beforeId) {
+        (void)account(id);
+        if (!beforeId.empty()) (void)account(beforeId);
+        const auto &list = catalog_.accounts;
+        const auto from = std::ranges::find(list, id, &Account::id) - list.begin();
+        const auto to =
+            (beforeId.empty() ? list.end() : std::ranges::find(list, beforeId, &Account::id)) - list.begin();
+        if (from == to || from + 1 == to) return;
+        auto next = catalog_;
+        const auto first = next.accounts.begin();
+        if (from < to)
+            std::rotate(first + from, first + from + 1, first + to);
+        else
+            std::rotate(first + to, first + from, first + from + 1);
+        save(std::move(next));
+    }
     void updatePending(bool value) {
         auto next = catalog_;
         next.updatePending = value;

@@ -10,6 +10,9 @@ Launch one account, or all of them. Each account opens in its own window. Closin
 
 Add an account with ArenaNet, Steam, or Epic. You sign in once, then just launch.
 
+Drag an account's header to reorder it. The entire card follows your mouse while
+the other accounts make room. Release to save the order, or press Escape to cancel.
+
 If GW2 asks for a verification code, the waiting account expands and scrolls into
 view. Email prompts show the saved ArenaNet email address so you know which inbox
 to check. Enter the emailed, SMS, or authenticator code and press Enter or the check

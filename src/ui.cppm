@@ -827,28 +827,47 @@ void accountFields(const Account *account, App &app, Form &form, const Snapshot 
     form.removing = iconButton(Icon::remove, "Remove account");
 }
 
-void accountRow(const Account *account, App &app, Form &form, const Snapshot &state, SDL_Window *nativeWindow) {
+struct AccountDrag {
+    std::array<char, 37> id{};
+    float grabY{};
+};
+struct AccountLayout {
+    const SessionView *session;
+    bool expanded;
+    float reveal, height;
+};
+AccountLayout accountLayout(const Account *account, const Form &form, const Snapshot &state) {
+    const auto session = account ? state.session(account->id) : nullptr;
+    const bool expanded = (session && ((session->active && session->state == 9) || session->needsVerification())) ||
+        (form.page == Form::Page::account &&
+            form.id == (account ? std::string_view(account->id) : std::string_view{}));
+    ImGui::PushID(account ? account->id.c_str() : "new-account");
+    const auto storage = ImGui::GetStateStorage();
+    const float reveal = std::clamp(storage->GetFloat(ImGui::GetID("reveal")) +
+        (expanded ? 1 : -1) * ImGui::GetIO().DeltaTime / 0.16f, 0.0f, 1.0f);
+    const float height = 56 * ImGui::GetStyle().FontScaleDpi +
+        storage->GetFloat(ImGui::GetID("height")) * reveal * reveal * (3 - 2 * reveal);
+    ImGui::PopID();
+    return {session, expanded, reveal, height};
+}
+void accountRow(const Account *account, App &app, Form &form, const Snapshot &state,
+    SDL_Window *nativeWindow, const AccountLayout &layout, bool floating = false) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const auto row = ImGui::GetCursorScreenPos();
     const auto width = ImGui::GetContentRegionAvail().x;
     const float header = 56 * scale, inset = 12 * scale;
     static const SessionView ready{{}, "Ready"};
     const auto &id = account ? account->id : ready.id;
-    const auto found = state.session(id);
+    const auto [found, expanded, reveal, total] = layout;
     const auto &session = found ? *found : ready;
     const bool registration = account && session.active && session.state == 9;
     const bool verification = account && session.needsVerification();
-    bool expanded = registration || verification || (form.page == Form::Page::account && form.id == id);
     const bool busy = form.pending || form.picker || state.busy;
     ImGui::PushID(account ? account->id.c_str() : "new-account");
     auto storage = ImGui::GetStateStorage();
     const auto revealId = ImGui::GetID("reveal"), heightId = ImGui::GetID("height");
-    const float reveal = std::clamp(
-        storage->GetFloat(revealId) + (expanded ? 1 : -1) * ImGui::GetIO().DeltaTime / 0.16f, 0.0f, 1.0f);
     storage->SetFloat(revealId, reveal);
     form.rowsMoving |= reveal != (expanded ? 1 : 0);
-    const float body = storage->GetFloat(heightId) * reveal * reveal * (3 - 2 * reveal);
-    const auto total = header + body;
     if (!ImGui::IsRectVisible({width, total}) && !expanded) {
         ImGui::Dummy({width, total});
         ImGui::PopID();
@@ -860,7 +879,8 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         ImGui::GetColorU32(selected ? ImGui::GetStyleColorVec4(ImGuiCol_Header)
                                     : ImVec4{20 / 255.f, 24 / 255.f, 29 / 255.f, 1}),
         7 * scale);
-    if (selected) draw->AddRect(row, {row.x + width, row.y + total}, ImGui::GetColorU32(accent), 7 * scale);
+    if (selected || floating)
+        draw->AddRect(row, {row.x + width, row.y + total}, ImGui::GetColorU32(accent), 7 * scale);
     const ImVec2 pos{row.x + inset, row.y + 8 * scale};
     const auto available = width - 2 * inset;
     const auto textWidth = available - (account ? 72 : 36) * scale;
@@ -924,6 +944,14 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
             form.toggle(id);
             form.rowsMoving = true;
         }
+        if (!busy && state.catalog.accounts.size() > 1 &&
+            ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
+            AccountDrag drag;
+            assign(drag.id, id);
+            drag.grabY = ImGui::GetIO().MouseClickedPos[ImGuiMouseButton_Left].y - row.y;
+            ImGui::SetDragDropPayload("GW2_ACCOUNT", &drag, sizeof(drag), ImGuiCond_Once);
+            ImGui::EndDragDropSource();
+        }
         ImGui::EndDisabled();
         ImGui::PopStyleColor(3);
     } else {
@@ -932,7 +960,6 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         if (iconButton(Icon::close, "Cancel new account")) form.go(Form::Page::accounts);
         ImGui::EndDisabled();
     }
-    expanded = registration || verification || (form.page == Form::Page::account && form.id == id);
     if (expanded) {
         auto window = ImGui::GetCurrentWindow();
         const auto measured = window->DC.CursorMaxPos;
@@ -962,6 +989,67 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         if (reveal == 1 && !form.pending && !form.picker) form.focusVerification = false;
     }
     ImGui::PopID();
+}
+
+void accountList(App &app, Form &form, const Snapshot &state, SDL_Window *nativeWindow, bool busy) {
+    const auto first = ImGui::GetCursorScreenPos();
+    const auto width = ImGui::GetContentRegionAvail().x;
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    const auto mouse = ImGui::GetIO().MousePos;
+    const auto &list = state.catalog.accounts;
+    const Account *dragged{}, *before{};
+    float dragY{};
+    AccountLayout draggedLayout{};
+    if (const auto payload = ImGui::GetDragDropPayload(); !busy && payload &&
+        payload->IsDataType("GW2_ACCOUNT") && payload->DataSize == static_cast<int>(sizeof(AccountDrag))) {
+        const auto &drag = *static_cast<const AccountDrag *>(payload->Data);
+        const auto found = std::ranges::find(list, std::string_view(drag.id.data(), 36), &Account::id);
+        if (found != list.end()) {
+            dragged = &*found;
+            dragY = mouse.y - drag.grabY;
+            draggedLayout = accountLayout(dragged, form, state);
+        }
+    }
+    for (const auto &account : list) {
+        if (&account == dragged) continue;
+        const auto layout = accountLayout(&account, form, state);
+        // Choose the slot before inserting its gap so the preview cannot move its own threshold.
+        if (dragged && !before && dragY < ImGui::GetCursorScreenPos().y + layout.height * 0.5f) {
+            before = &account;
+            ImGui::Dummy({width, draggedLayout.height});
+        }
+        accountRow(&account, app, form, state, nativeWindow, layout);
+    }
+    if (dragged) {
+        if (!before) ImGui::Dummy({width, draggedLayout.height});
+        const auto cursor = ImGui::GetCursorScreenPos();
+        const auto extent = ImGui::GetCurrentWindow()->DC.CursorMaxPos;
+        ImGui::SetCursorScreenPos({first.x, dragY});
+        accountRow(dragged, app, form, state, nativeWindow, draggedLayout, true);
+        ImGui::SetCursorScreenPos(cursor);
+        ImGui::Dummy({0, 0});
+        // The in-list gap owns scroll extent; the floating card must not grow it while scrolling.
+        ImGui::GetCurrentWindow()->DC.CursorMaxPos = extent;
+    }
+    const auto clip = ImGui::GetCurrentWindow()->ClipRect;
+    const ImRect target{{first.x, std::max(first.y - 2 * scale, clip.Min.y)}, {first.x + width, clip.Max.y}};
+    if (!busy && list.size() > 1 && ImGui::BeginDragDropTargetCustom(target, ImGui::GetID("##reorder"))) {
+        if (const auto payload = ImGui::AcceptDragDropPayload("GW2_ACCOUNT",
+                ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+            payload && dragged) {
+            if (payload->IsDelivery())
+                form.request({.action = Action::reorder, .id = dragged->id,
+                    .beforeId = before ? before->id : std::string{}});
+            else if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                const float edge = std::min(24 * scale, target.GetHeight() * 0.25f);
+                const float direction = mouse.y < target.Min.y + edge ? -1.f
+                    : mouse.y > target.Max.y - edge ? 1.f : 0.f;
+                ImGui::SetScrollY(std::clamp(ImGui::GetScrollY() + direction * 300 * scale *
+                    ImGui::GetIO().DeltaTime, 0.f, ImGui::GetScrollMaxY()));
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
 }
 
 void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
@@ -1162,9 +1250,9 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
             mutedText("Add an ArenaNet account to get started.");
             ImGui::PopTextWrapPos();
         }
-        if (form.page == Form::Page::account && form.id.empty()) accountRow(nullptr, app, form, state, window);
-        for (const auto &account : state.catalog.accounts)
-            accountRow(&account, app, form, state, window);
+        if (form.page == Form::Page::account && form.id.empty())
+            accountRow(nullptr, app, form, state, window, accountLayout(nullptr, form, state));
+        accountList(app, form, state, window, busy);
     } else {
         ImGui::BeginDisabled(busy || form.page != page);
         settingsPage(form, state, window);
