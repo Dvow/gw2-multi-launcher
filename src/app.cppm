@@ -152,8 +152,9 @@ class App {
     static std::string failure(std::uint32_t code) {
         if ((code & 0xFF000000u) == 0x40000000u)
             return "DLL " + std::to_string((code >> 16) & 0xFF) +
-                " could not load (Windows error " + std::to_string(code & 0xFFFF) +
-                "). Check the file, its 64-bit dependencies, and initialization. Close this client before retrying.";
+                " could not be copied or loaded (Windows error " + std::to_string(code & 0xFFFF) +
+                "). Check the file, temporary-folder access, its 64-bit dependencies, and initialization. "
+                "Close this client before retrying.";
         switch (code) {
         case 1001:
             return "Wine could not resolve the game path.";

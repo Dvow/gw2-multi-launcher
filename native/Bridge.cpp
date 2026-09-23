@@ -101,7 +101,7 @@ DWORD ReleaseInstanceMutex() {
 }
 
 namespace {
-constexpr wchar_t MessageName[] = L"KX.GW2MultiLauncher.Native.11";
+constexpr wchar_t MessageName[] = L"KX.GW2MultiLauncher.Native.12";
 constexpr DWORD Magic = 0x31584B47;
 
 enum Operation : DWORD {
@@ -132,6 +132,9 @@ enum Result : DWORD {
     VerificationRequired = 12
 };
 
+struct DllPaths {
+    wchar_t file[4096], directory[4096];
+};
 // One fixed value packet. No host-process pointers are meaningful to the hook.
 struct Packet {
     DWORD magic, version, targetPid, operation;
@@ -140,7 +143,7 @@ struct Packet {
     wchar_t email[320];
     union {
         wchar_t password[8192];
-        wchar_t dllPath[4096];
+        DllPaths dll;
     };
     gw2::Layout layout;
 };
@@ -524,16 +527,22 @@ DWORD ApplyGuarded(Packet *request, HWND window) {
 DWORD WINAPI LoadDllWorker(void *parameter) {
     auto p = static_cast<Packet *>(parameter);
     DWORD error{};
+    DLL_DIRECTORY_COOKIE directory{};
     __try {
         // This worker owns its mapping and one bridge reference, even if the
         // host times out. Never load third-party code in DllMain or a UI callback.
         SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, nullptr);
-        if (!LoadLibraryExW(p->dllPath, nullptr,
+        // The staged file keeps its name; sibling imports still need the source
+        // directory. Remove only our registration after the load completes,
+        // including faults. Never change the working directory or global defaults.
+        directory = AddDllDirectory(p->dll.directory);
+        if (!directory || !LoadLibraryExW(p->dll.file, nullptr,
                 LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS))
             error = GetLastError();
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         error = GetExceptionCode();
     }
+    if (directory && !RemoveDllDirectory(directory) && !error) error = GetLastError();
     p->exceptionCode = error;
     SecureZeroMemory(p->password, sizeof(p->password));
     InterlockedExchange(reinterpret_cast<volatile LONG *>(&p->result), error ? NativeFault : Completed);
@@ -544,7 +553,9 @@ DWORD WINAPI LoadDllWorker(void *parameter) {
 }
 
 DWORD StartDllLoad(Packet *p) {
-    if (!p->dllPath[0] || !wmemchr(p->dllPath, 0, 4096)) return ERROR_INVALID_PARAMETER;
+    if (!p->dll.file[0] || !wmemchr(p->dll.file, 0, 4096) ||
+        !p->dll.directory[0] || !wmemchr(p->dll.directory, 0, 4096))
+        return ERROR_INVALID_PARAMETER;
     HMODULE retained{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
             reinterpret_cast<const wchar_t *>(&LoadDllWorker), &retained))
@@ -584,7 +595,7 @@ void ReceiveRequest(const CWPSTRUCT &message) {
     View view{static_cast<Packet *>(
         MapViewOfFile(mapping.value, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(Packet)))};
     auto p = view.value;
-    if (!p || p->magic != Magic || p->version != 11 || p->nonce != nonce ||
+    if (!p || p->magic != Magic || p->version != 12 || p->nonce != nonce ||
         p->targetPid != GetCurrentProcessId() || p->result != Pending)
         return;
     if (p->operation == LoadDll) {
@@ -619,7 +630,10 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
     if (!thread || actualPid != targetPid || operation > VerifyCode) return ERROR_INVALID_PARAMETER;
     if (operation == VerifyCode && (!password || !password[0] || wcsnlen_s(password, 8) >= 8))
         return ERROR_INVALID_PARAMETER;
-    if (operation == LoadDll && (!password || !password[0] || wcsnlen_s(password, 4096) >= 4096))
+    // LoadDll uses email/password arguments for source directory/staged file;
+    // both go into its dedicated union member, not the credential fields.
+    if (operation == LoadDll && (!email || !email[0] || wcsnlen_s(email, 4096) >= 4096 ||
+            !password || !password[0] || wcsnlen_s(password, 4096) >= 4096))
         return ERROR_INVALID_PARAMETER;
     const size_t maximum = operation == EpicLogin ? 8192 : operation == SteamLogin ? 600 : 256;
     if ((operation == Login || operation == SteamLogin || operation == EpicLogin) &&
@@ -644,12 +658,15 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
     auto p = view.value;
     *p = {};
     p->magic = Magic;
-    p->version = 11;
+    p->version = 12;
     p->targetPid = targetPid;
     p->layout = *layout;
     p->nonce = nonce;
     p->operation = operation;
-    if (operation == LoadDll) wcscpy_s(p->dllPath, password);
+    if (operation == LoadDll) {
+        wcscpy_s(p->dll.directory, email);
+        wcscpy_s(p->dll.file, password);
+    }
     if (operation == VerifyCode) wcscpy_s(p->password, password);
     if (operation == Login || operation == SteamLogin || operation == EpicLogin) {
         wcscpy_s(p->email, email);

@@ -1,6 +1,9 @@
 #include <windows.h>
+#include <bcrypt.h>
+#include <array>
 #include <atomic>
 #include <cstdint>
+#include <cwchar>
 #include <string>
 #include <vector>
 #include <stdexcept>
@@ -15,6 +18,8 @@ extern "C" __declspec(dllimport) DWORD __cdecl KxExecute(
 
 namespace {
 constexpr DWORD Magic = 0x36585747; // Protocol 6: launch settings, credentials and verification/control messages.
+// Connected, Show, invalid input, setup cancel, Close, stop input reader.
+std::atomic<unsigned> control{1};
 struct Failure {
     DWORD code;
 };
@@ -22,6 +27,94 @@ struct Handle {
     HANDLE value{};
     ~Handle() {
         if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value);
+    }
+};
+class DllCopies {
+    struct Paths {
+        std::wstring folder, file;
+    };
+    const Handle &process_;
+    std::vector<Paths> paths_;
+
+  public:
+    explicit DllCopies(const Handle &process) : process_(process) {}
+    DllCopies(const DllCopies &) = delete;
+    DllCopies &operator=(const DllCopies &) = delete;
+    ~DllCopies() {
+        if (paths_.empty()) return;
+        // A timed-out loader can still be using a path, and the UI can close
+        // before GW2. Only the actual game process exiting permits deletion.
+        // This helper waits without keeping the desktop UI or secrets alive.
+        if (process_.value && WaitForSingleObject(process_.value, INFINITE) != WAIT_OBJECT_0) return;
+        for (const auto &path : paths_) {
+            DeleteFileW(path.file.c_str());
+            RemoveDirectoryW(path.folder.c_str());
+        }
+    }
+    const std::wstring &copy(const std::wstring &source) {
+        // Deny source writes only while taking the snapshot. Never map the
+        // build output into GW2 or fall back to it when the copy fails.
+        Handle input{CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+            FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
+        if (input.value == INVALID_HANDLE_VALUE) throw Failure{GetLastError()};
+        struct PendingCopy {
+            Paths paths;
+            bool folderOwned{}, fileOwned{};
+            ~PendingCopy() {
+                if (fileOwned) DeleteFileW(paths.file.c_str());
+                if (folderOwned) RemoveDirectoryW(paths.folder.c_str());
+            }
+        } pending;
+        Handle output;
+        std::wstring temp(32768, L'\0');
+        const auto length = GetTempPathW(static_cast<DWORD>(temp.size()), temp.data());
+        if (!length) throw Failure{GetLastError()};
+        if (length >= temp.size()) throw Failure{ERROR_FILENAME_EXCED_RANGE};
+        temp.resize(length);
+        const auto filename = std::filesystem::path(source).filename();
+        for (unsigned attempt = 0; attempt < 8; ++attempt) {
+            std::uint64_t nonce{};
+            if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&nonce), sizeof(nonce),
+                    BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+                throw Failure{ERROR_GEN_FAILURE};
+            wchar_t name[64]{};
+            swprintf_s(name, L"GW2MultiLauncher-%lu-%016llx", GetCurrentProcessId(), nonce);
+            const auto folder = std::filesystem::path(temp) / name;
+            pending.paths.folder = folder.native();
+            pending.paths.file = (folder / filename).native();
+            if (pending.paths.file.size() >= 4096) throw Failure{ERROR_FILENAME_EXCED_RANGE};
+            if (CreateDirectoryW(pending.paths.folder.c_str(), nullptr)) {
+                pending.folderOwned = true;
+                break;
+            }
+            const auto error = GetLastError();
+            if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) throw Failure{error};
+        }
+        if (!pending.folderOwned) throw Failure{ERROR_FILE_EXISTS};
+        output.value = CreateFileW(pending.paths.file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (output.value == INVALID_HANDLE_VALUE) throw Failure{GetLastError()};
+        pending.fileOwned = true;
+        std::array<BYTE, 65536> bytes{};
+        for (;;) {
+            if (!(control.load() & 1)) throw Failure{ERROR_CANCELLED};
+            DWORD read{};
+            if (!ReadFile(input.value, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr))
+                throw Failure{GetLastError()};
+            if (!read) break;
+            for (DWORD offset = 0; offset < read;) {
+                DWORD written{};
+                if (!WriteFile(output.value, bytes.data() + offset, read - offset, &written, nullptr))
+                    throw Failure{GetLastError()};
+                if (!written) throw Failure{ERROR_WRITE_FAULT};
+                offset += written;
+            }
+        }
+        // Keep the basename: KX and other add-ons resolve their host by name.
+        // The source handle closes here; only the independent copy is loaded.
+        paths_.push_back(pending.paths);
+        pending.fileOwned = pending.folderOwned = false;
+        return paths_.back().file;
     }
 };
 struct Secrets {
@@ -49,6 +142,7 @@ struct Client {
 void Read(void *data, DWORD size) {
     auto p = static_cast<BYTE *>(data);
     while (size) {
+        if (control.load() & 32) throw Failure{ERROR_CANCELLED};
         DWORD n{};
         if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), p, size, &n, nullptr) || !n) throw Failure{1000};
         p += n;
@@ -175,14 +269,12 @@ void Reveal(Client &client, bool focus = false) {
     }
 }
 // Wine imports Unix pipes as character handles: PeekNamedPipe cannot poll them.
-// This process-lifetime reader owns stdin after the request. Its mailbox also
-// lives until process exit; teardown never destroys a mutex under a blocked reader.
-std::atomic<unsigned> control{1}; // Connected, Show requested, invalid command.
+// The input reader owns stdin after the request; teardown cancels and joins it.
 struct RegistrationInput {
     std::mutex mutex;
     Secrets request, code;
 };
-RegistrationInput &registration = *new RegistrationInput;
+RegistrationInput registration;
 Secrets TakeCredentials() {
     std::lock_guard lock(registration.mutex);
     return std::move(registration.request);
@@ -196,7 +288,8 @@ DWORD WINAPI ReadControl(void *parameter) {
     bool initial = true;
     BYTE command{};
     DWORD count{};
-    while (ReadFile(GetStdHandle(STD_INPUT_HANDLE), &command, 1, &count, nullptr) && count) {
+    while (!(control.load() & 32) &&
+        ReadFile(GetStdHandle(STD_INPUT_HANDLE), &command, 1, &count, nullptr) && count) {
         if (command == 2) break;
         if (command == 5) {
             control.fetch_or(16);
@@ -248,11 +341,27 @@ DWORD WINAPI ReadControl(void *parameter) {
     control.fetch_and(~1u);
     return 0;
 }
-void StartControl(DWORD operation = 0) {
-    Handle thread{CreateThread(
-        nullptr, 0, ReadControl, reinterpret_cast<void *>(static_cast<ULONG_PTR>(operation)), 0, nullptr)};
-    if (!thread.value) throw Failure{GetLastError()};
-}
+struct ControlReader {
+    Handle thread;
+    void start(DWORD operation = 0) {
+        thread.value = CreateThread(nullptr, 0, ReadControl,
+            reinterpret_cast<void *>(static_cast<ULONG_PTR>(operation)), 0, nullptr);
+        if (!thread.value) throw Failure{GetLastError()};
+    }
+    ~ControlReader() {
+        if (!thread.value) return;
+        control.fetch_or(32);
+        // Cancellation can race the next ReadFile. Repeat until the reader has
+        // actually exited, then wipe pending secrets before waiting for GW2.
+        while (WaitForSingleObject(thread.value, 0) == WAIT_TIMEOUT) {
+            CancelSynchronousIo(thread.value);
+            WaitForSingleObject(thread.value, 50);
+        }
+        std::lock_guard lock(registration.mutex);
+        registration.request = {};
+        registration.code = {};
+    }
+};
 bool Control(Client &client) {
     const auto state = control.fetch_and(~18u);
     if (state & 4) throw Failure{1000};
@@ -332,6 +441,7 @@ struct Launch {
     DWORD operation;
     Secrets secret;
     std::vector<std::wstring> dlls;
+    DllCopies &copies;
     Phase phase{starting};
     DWORD flags{};
     ULONGLONG deadline{GetTickCount64() + 90000};
@@ -442,7 +552,13 @@ struct Launch {
                     }
                     Report(11, static_cast<DWORD>(i + 1));
                     try {
-                        if (Native(client, 8, flags, nullptr, dlls[i].c_str()) != 1)
+                        const auto &copy = copies.copy(dlls[i]);
+                        if (!Control(client)) {
+                            Reveal(client);
+                            return;
+                        }
+                        const auto directory = std::filesystem::path(dlls[i]).parent_path().native();
+                        if (Native(client, 8, flags, directory.c_str(), copy.c_str()) != 1)
                             throw Failure{ERROR_DLL_INIT_FAILED};
                     } catch (const Failure &failure) {
                         // Preserve the launch-list index and loader error in one
@@ -487,6 +603,8 @@ int main(int argc, char **argv) {
     if (argc != 1 && (argc != 3 || strcmp(argv[1], "--input"))) return 2;
     Client client;
     Handle process, input;
+    DllCopies copies{process};
+    ControlReader reader;
     try {
         if (argc == 3) OpenInput(input, argv[2]);
         if (Number() != Magic) throw Failure{1000};
@@ -495,7 +613,7 @@ int main(int argc, char **argv) {
         const auto executable = DosPath(String());
         const auto folder = executable.substr(0, executable.find_last_of(L"\\/"));
         if (operation == 1) {
-            StartControl();
+            reader.start();
             Update(executable, folder, client);
             return 0;
         }
@@ -525,7 +643,7 @@ int main(int argc, char **argv) {
         Handle existing{OpenMutexW(SYNCHRONIZE, FALSE, L"AN-Mutex-Window-Guild Wars 2")};
         if (existing.value) throw Failure{1002};
         if (GetLastError() != ERROR_FILE_NOT_FOUND) throw Failure{GetLastError()};
-        StartControl(operation);
+        reader.start(operation);
         if (!Control(client)) return 0;
         STARTUPINFOW startup{sizeof(startup)};
         startup.dwFlags = STARTF_USESHOWWINDOW;
@@ -539,7 +657,7 @@ int main(int argc, char **argv) {
         CloseHandle(info.hThread);
         client.pid = info.dwProcessId;
         Report(1, client.pid); // Starting: detail identifies the game, not this helper.
-        Launch{client, process.value, operation, {}, std::move(dlls)}.run();
+        Launch{client, process.value, operation, {}, std::move(dlls), copies}.run();
     } catch (const Failure &failure) {
         client.hide = false;
         Reveal(client);

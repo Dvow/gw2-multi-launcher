@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.30)
-project(GW2MultiLauncher VERSION 0.4.3 LANGUAGES C CXX)
+project(GW2MultiLauncher VERSION 0.4.4 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -152,7 +152,7 @@ try {
   add_library(GW2MultiLauncher.Native SHARED native/Bridge.cpp)
   target_link_libraries(GW2MultiLauncher.Native PRIVATE game minhook user32 advapi32 bcrypt comctl32)
   add_executable(GW2MultiLauncher.Host WIN32 native/Host.cpp)
-  target_link_libraries(GW2MultiLauncher.Host PRIVATE game GW2MultiLauncher.Native user32)
+  target_link_libraries(GW2MultiLauncher.Host PRIVATE game GW2MultiLauncher.Native user32 bcrypt)
   target_link_options(GW2MultiLauncher.Host PRIVATE /ENTRY:mainCRTStartup)
   set(native_targets GW2MultiLauncher.Native GW2MultiLauncher.Host)
   foreach(target IN ITEMS gw2-multi-launcher game ${native_targets})

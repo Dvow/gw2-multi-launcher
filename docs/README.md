@@ -34,6 +34,11 @@ editor. DLLs selected in Settings load first, followed by that account's DLLs;
 duplicate files load once. Click a file's tag to replace it or its cross to remove
 it. Changes apply on the next launch.
 
+Each game loads its own temporary copy of the selected DLL, keeping the original
+filename so add-ons can still find it by name. You can rebuild or replace the
+source DLL while playing. Copies are removed after the game exits, even if you
+close the launcher first.
+
 <p align="center">
   <img src="settings.png" width="280" alt="Settings">
 </p>
