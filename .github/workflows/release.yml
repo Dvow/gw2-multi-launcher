@@ -1,0 +1,113 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Build Windows installer and game helpers
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
+          Import-Module "$vs/Common7/Tools/Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          cmake --preset release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-installer
+          path: build/release/*_win-x64_setup.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: native-helpers
+          path: |
+            build/release/bin/GW2MultiLauncher.Host.exe
+            build/release/bin/GW2MultiLauncher.Native.dll
+          if-no-files-found: error
+
+  linux:
+    needs: windows
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git g++ cmake ninja-build pkg-config dpkg-dev libicu-dev \
+            libsecret-1-dev libssl-dev libcurl4-openssl-dev libgl-dev libx11-dev libxext-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: native-helpers
+          path: build/native
+      - name: Build Ubuntu installer
+        run: |
+          cmake --preset release -DCMAKE_INSTALL_PREFIX=/usr -DGW2_NATIVE_DIR="$PWD/build/native"
+          cmake --build --preset release --parallel 2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-installer
+          path: build/release/*_amd64.deb
+          if-no-files-found: error
+
+  release:
+    needs: [windows, linux]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: '*-installer'
+          merge-multiple: true
+          path: build/release
+      - name: Publish a new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -nE 's/^project\(GW2MultiLauncher VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          tag="v$version"
+          if gh release view "$tag" --json isDraft --jq '.isDraft' > build/draft; then
+            if [ "$(cat build/draft)" = false ]; then
+              echo "$tag is already published; bump the CMake project version for a new release."
+              exit 0
+            fi
+          else
+            latest=$(gh release list --exclude-drafts --exclude-pre-releases --json tagName,isLatest --jq '.[] | select(.isLatest) | .tagName')
+            if [ -n "$latest" ]; then
+              newest=$(printf '%s\n' "${latest#v}" "$version" | sort -V | tail -n1)
+              test "$newest" = "$version" && test "${latest#v}" != "$version"
+            fi
+            gh release create "$tag" --draft --target "$GITHUB_SHA" \
+              --title "GW2 Multi Launcher $tag" --generate-notes
+          fi
+          gh release upload "$tag" "build/release/gw2-multi-launcher_${version}_win-x64_setup.exe" \
+            "build/release/gw2-multi-launcher_${version}_amd64.deb" --clobber
+          gh release edit "$tag" --draft=false --latest

@@ -28,6 +28,7 @@ export module ui;
 import platform;
 import accounts;
 import app;
+import update;
 
 namespace gw2::presentation {
 constexpr ImVec4 background{0.055f, 0.067f, 0.082f, 1};
@@ -246,7 +247,7 @@ struct Form {
     App *authApp{};
     std::array<char, 2049> args{};
     std::array<char, 32761> game{}, runner{}, prefix{}, proton{};
-    bool hide{}, showPid{}, removing{}, loading{}, edited{}, connected{};
+    bool hide{}, showPid{}, autoUpdate{true}, removing{}, loading{}, edited{}, connected{};
     std::uint64_t pending{};
     Action pendingAction{};
     std::shared_ptr<Picker> picker;
@@ -294,6 +295,7 @@ struct Form {
         assign(proton, c.proton);
         hide = c.hideLogin;
         showPid = c.showPid;
+        autoUpdate = c.autoUpdate;
     }
     void openAccount(const Account *account, App &app) {
         close();
@@ -313,6 +315,7 @@ struct Form {
         }
     }
     void observe(const Snapshot &snapshot) {
+        if (snapshot.update.stage == UpdateStage::installed) go(Page::exit);
         const bool signedIn =
             snapshot.auth.connected && snapshot.auth.id == id && snapshot.auth.provider == provider;
         if (page == Page::account && !id.empty() && signedIn && !connected) edited = true;
@@ -369,6 +372,7 @@ struct Form {
             c.settings.arguments = args.data();
             c.settings.hideLogin = hide;
             c.settings.showPid = showPid;
+            c.settings.autoUpdate = autoUpdate;
             c.settings.runner = runner.data();
             c.settings.prefix = prefix.data();
             c.settings.proton = proton.data();
@@ -821,7 +825,7 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     ImGui::PopID();
 }
 
-void header(Form &form, SDL_Window *window, bool busy) {
+void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const auto width = ImGui::GetWindowWidth();
     ImGui::SetCursorPos({14 * scale, (headerHeight * scale - ImGui::GetTextLineHeight()) / 2});
@@ -831,8 +835,16 @@ void header(Form &form, SDL_Window *window, bool busy) {
     ImGui::SetCursorPos(headerButton(0, width, scale).Min);
     ImGui::BeginDisabled(busy);
     if (iconButton(form.page != Form::Page::settings ? Icon::settings : Icon::back,
-            form.page != Form::Page::settings ? "Settings" : "Back to accounts")) {
+            form.page == Form::Page::settings ? "Back to accounts"
+                : updateAvailable             ? "Settings — launcher update available"
+                                              : "Settings")) {
         form.go(form.page != Form::Page::settings ? Form::Page::settings : Form::Page::accounts);
+    }
+    if (updateAvailable && form.page != Form::Page::settings) {
+        const auto edge = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddCircleFilled(
+            {edge.x - 4 * scale, ImGui::GetItemRectMin().y + 4 * scale}, 3 * scale,
+            ImGui::GetColorU32(accent));
     }
     ImGui::EndDisabled();
     ImGui::SetCursorPos(headerButton(1, width, scale).Min);
@@ -899,7 +911,7 @@ void pathField(Form &form, SDL_Window *window, const char *label, std::array<cha
         form.choose(window, target, folder, value[0] ? value.data() : nullptr);
     ImGui::PopID();
 }
-void settingsPage(Form &form, SDL_Window *window) {
+void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     pathField(form, window, "Game executable", form.game, 1, false, "Full path to Gw2-64.exe");
     form.edited |= field("Global arguments", form.args, "e.g. -windowed -loadmapinfo");
     form.edited |= ImGui::Checkbox("Hide sign-in window", &form.hide);
@@ -914,6 +926,24 @@ void settingsPage(Form &form, SDL_Window *window) {
         pathField(form, window, "Proton directory", form.proton, 3, true,
             "Directory containing the proton executable");
 #endif
+    ImGui::Spacing();
+    ImGui::SeparatorText("Launcher updates");
+    ImGui::TextDisabled("Version %s", appVersion.data());
+    form.edited |= ImGui::Checkbox("Check automatically", &form.autoUpdate);
+    help("Check GitHub once when the launcher opens. Choose Update now to install an available update.");
+    const auto &update = state.update;
+    const bool available = update.stage == UpdateStage::available;
+    ImGui::BeginDisabled(update.busy());
+    const auto label = update.stage == UpdateStage::checking ? "Checking…"
+        : update.stage == UpdateStage::installing            ? "Updating…"
+        : available                                          ? "Update now"
+                                                             : "Check for updates";
+    if (button(label, 0, available ? primaryColor : ImVec4{}))
+        form.request({.action = available ? Action::installUpdate : Action::checkUpdate});
+    ImGui::EndDisabled();
+    if (available) ImGui::TextDisabled("Version %s available", update.version.c_str());
+    if (update.stage == UpdateStage::current) mutedText("Up to date");
+    if (!update.error.empty()) ImGui::TextWrapped("%s", update.error.c_str());
 }
 
 void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, bool &open) {
@@ -929,7 +959,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     ImGui::Begin("GW2 Multi Launcher", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollWithMouse);
-    header(form, window, busy);
+    header(form, window, busy, state.update.stage == UpdateStage::available);
     const auto message = form.localError.empty() ? state.error : form.localError;
     const auto page = form.page;
     const bool accounts = page != Form::Page::settings;
@@ -968,7 +998,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
             accountRow(&account, app, form, state);
     } else {
         ImGui::BeginDisabled(busy || form.page != page);
-        settingsPage(form, window);
+        settingsPage(form, state, window);
         ImGui::EndDisabled();
     }
     ImGui::EndChild();
@@ -1186,6 +1216,6 @@ int run() {
         drawFrame(app, form, *snapshot, window.get(), context, open);
     }
     form.close();
-    return 0;
+    return app.snapshot()->update.stage == UpdateStage::installed ? 3 : 0;
 }
 } // namespace gw2

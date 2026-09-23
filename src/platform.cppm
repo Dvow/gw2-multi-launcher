@@ -545,11 +545,12 @@ struct HttpReply {
     Secret body;
 };
 HttpReply https(std::string_view host, std::string_view resource, std::string_view authorization,
-    std::string_view body, std::stop_token stop) {
+    std::string_view body, std::stop_token stop, std::size_t limit = 32768) {
     cancelled(stop);
     HttpReply reply;
     auto &response = reply.body.bytes;
     response.reserve(32768);
+    const bool download = host == "github.com" && authorization.empty() && body.empty();
 #ifdef _WIN32
     struct Internet {
         HINTERNET value{};
@@ -578,7 +579,8 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
                                             reinterpret_cast<const wchar_t *>(route.bytes.data()), nullptr,
                                             nullptr, nullptr, WINHTTP_FLAG_SECURE)
                                       : nullptr};
-    DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    DWORD policy = download ? WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP
+                            : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
     if (request.value)
         WinHttpSetOption(request.value, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
     if (!request.value ||
@@ -592,8 +594,8 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
             &status, &size, nullptr))
         throw std::runtime_error("Invalid service response.");
     reply.status = status;
-    const auto deadline = SDL_GetTicks() + 10000;
-    Secret buffer(1024);
+    const auto deadline = SDL_GetTicks() + (download ? 600000 : 10000);
+    Secret buffer(16384);
     for (;;) {
         cancelled(stop);
         DWORD count{};
@@ -602,7 +604,7 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
                 request.value, buffer.bytes.data(), static_cast<DWORD>(buffer.bytes.size()), &count))
             throw std::runtime_error("The service request timed out.");
         if (!count) break;
-        if (count > 32768 - response.size()) throw std::runtime_error("The service response is too large.");
+        if (count > limit - response.size()) throw std::runtime_error("The service response is too large.");
         response.insert(response.end(), buffer.bytes.begin(), buffer.bytes.begin() + count);
     }
 #else
@@ -632,18 +634,29 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
     }
     curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "GW2MultiLauncher/0.2");
     curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 3L);
-    curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, download ? 600L : 15L);
+    curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, download ? 1L : 0L);
+    curl_easy_setopt(curl.get(), CURLOPT_MAXREDIRS, 5L);
+    curl_easy_setopt(curl.get(), CURLOPT_REDIR_PROTOCOLS_STR, "https");
     curl_easy_setopt(curl.get(), CURLOPT_NOSIGNAL, 1L);
+    struct Output {
+        Bytes &bytes;
+        std::size_t limit;
+    } output{response, limit};
     curl_easy_setopt(
         curl.get(), CURLOPT_WRITEFUNCTION,
         +[](char *data, std::size_t size, std::size_t count, void *context) -> std::size_t {
             const auto length = size * count;
-            auto &out = *static_cast<Bytes *>(context);
-            if (length > 32768 - out.size()) return 0;
-            out.insert(out.end(), data, data + length);
-            return length;
+            auto &out = *static_cast<Output *>(context);
+            if (length > out.limit - out.bytes.size()) return 0;
+            try {
+                out.bytes.insert(out.bytes.end(), data, data + length);
+                return length;
+            } catch (...) {
+                return 0;
+            }
         });
-    curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &output);
     curl_easy_setopt(curl.get(), CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(
         curl.get(), CURLOPT_XFERINFOFUNCTION,
@@ -659,6 +672,24 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
 #endif
     cancelled(stop);
     return reply;
+}
+std::string sha256(std::span<const unsigned char> bytes) {
+    std::array<unsigned char, 32> digest{};
+#ifdef _WIN32
+    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, const_cast<unsigned char *>(bytes.data()),
+            static_cast<ULONG>(bytes.size()), digest.data(), static_cast<ULONG>(digest.size())) != 0)
+#else
+    if (EVP_Digest(bytes.data(), bytes.size(), digest.data(), nullptr, EVP_sha256(), nullptr) != 1)
+#endif
+        throw std::runtime_error("Could not verify the update download.");
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(64);
+    for (const auto byte : digest) {
+        result += hex[byte >> 4];
+        result += hex[byte & 15];
+    }
+    return result;
 }
 std::string latestBuild(std::stop_token stop) {
     auto reply = https("api.guildwars2.com", "/v2/build", {}, {}, stop);

@@ -26,7 +26,7 @@ void Store::save(Catalog next) {
     nlohmann::json json{{"Version", 2}, {"GamePath", next.gamePath}, {"Accounts", accounts},
         {"HideLogin", next.hideLogin}, {"ShowPid", next.showPid}, {"Arguments", next.arguments},
         {"Runner", next.runner}, {"Prefix", next.prefix}, {"Proton", next.proton},
-        {"UpdatePending", next.updatePending}};
+        {"UpdatePending", next.updatePending}, {"AutoUpdate", next.autoUpdate}};
     json["Window"] = {{"Width", next.window.width}, {"Height", next.window.height}, {"X", next.window.x},
         {"Y", next.window.y}, {"Positioned", next.window.positioned}, {"Scale", next.window.scale}};
     atomicWrite(root_ / "accounts.json", json.dump(2));
@@ -58,6 +58,7 @@ Store::Store() {
         catalog_.showPid = json.value("ShowPid", false);
         catalog_.runner = json.value("Runner", "wine");
         catalog_.updatePending = json.value("UpdatePending", false);
+        catalog_.autoUpdate = json.value("AutoUpdate", true);
         catalog_.prefix = json.value("Prefix", "");
         catalog_.proton = json.value("Proton", "");
         if (auto w = json.find("Window"); w != json.end() && w->is_object()) {

@@ -106,7 +106,38 @@ Type: files; Name: "{app}\steam\Gw2Launcher.Steam.*"
 Name: "{userprograms}\GW2 Multi Launcher"; Filename: "{app}\GW2MultiLauncher.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\GW2MultiLauncher.exe"; Description: "Open GW2 Multi Launcher"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\GW2MultiLauncher.exe"; Description: "Open GW2 Multi Launcher"; Flags: nowait postinstall skipifsilent; Check: not IsLauncherUpdate
+Filename: "{app}\GW2MultiLauncher.exe"; Flags: nowait; Check: IsLauncherUpdate
+
+[Code]
+function OpenProcess(Access: LongWord; Inherit: Integer; ProcessId: LongWord): THandle;
+  external 'OpenProcess@kernel32.dll stdcall';
+function WaitForSingleObject(Handle: THandle; Milliseconds: LongWord): LongWord;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function CloseHandle(Handle: THandle): Integer;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function IsLauncherUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATEPID|0}') <> '0';
+end;
+
+function InitializeSetup: Boolean;
+var
+  Handle: THandle;
+  ProcessId: LongWord;
+begin
+  Result := True;
+  ProcessId := StrToIntDef(ExpandConstant('{param:UPDATEPID|0}'), 0);
+  if ProcessId = 0 then Exit;
+  Handle := OpenProcess($100000, 0, ProcessId);
+  if Handle = 0 then Exit;
+  { Wait for the actual launcher exit so settings are flushed before replacing files. }
+  Result := WaitForSingleObject(Handle, 30000) = 0;
+  CloseHandle(Handle);
+  if not Result then
+    MsgBox('Close GW2 Multi Launcher, then run the update again.', mbError, MB_OK);
+end;
 ]=])
   string(CONFIGURE "${setup}" setup @ONLY)
   file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/setup.iss" CONTENT "${setup}")
@@ -144,7 +175,7 @@ else()
   set(CPACK_DEBIAN_PACKAGE_REPLACES "gw2-launcher")
   set(CPACK_DEBIAN_PACKAGE_CONFLICTS "gw2-launcher")
   set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsecret-1-0, libgl1, libx11-6, libxcursor1, libxrandr2, libxi6, libxfixes3, libxss1, libxtst6, xwayland")
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsecret-1-0, libgl1, libx11-6, libxcursor1, libxrandr2, libxi6, libxfixes3, libxss1, libxtst6, xwayland, pkexec")
   set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "gnome-keyring")
   set(CPACK_STRIP_FILES ON)
   include(CPack)

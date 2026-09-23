@@ -14,12 +14,14 @@ The launcher checks ArenaNet's current build before launching and runs the offic
 
 Launching an account automatically accepts GW2's current user agreement when required.
 
+The app checks GitHub for a newer stable launcher release once at startup, in the background. Turn off **Check automatically** under Launcher updates in Settings to disable this. **Check for updates** works manually; it becomes **Update now** when an update is available. Close your games before installing. Downloads are verified against GitHub's SHA-256 digest, then the launcher installs and reopens. Ubuntu asks for administrator authentication. A Windows copy run from a build folder installs into the normal per-user app location.
+
 Passwords and saved Steam/Epic sessions are protected with Windows DPAPI or your Linux desktop keyring. They never go in command-line arguments. Account data stays in your user data directory under `KX/GW2MultiLauncher`, outside the installation. Existing saved accounts and settings are imported automatically on first launch.
 
 ## Install
 
 - **Windows 10/11 x64:** run the setup executable. No administrator access required.
-- **Ubuntu 26.04 x64:** install the `.deb` with `sudo apt install ./gw2-multi-launcher_0.2.5_amd64.deb`. Use a desktop with OpenGL, X11/XWayland, and an unlocked Secret Service keyring. Install GW2 through Wine or Proton first, then select that runner and prefix in Settings. Proton uses `umu-run` and your installed Proton directory. For other distributions, build from source.
+- **Ubuntu 26.04 x64:** install the `.deb` with `sudo apt install ./gw2-multi-launcher_0.3.0_amd64.deb`. Use a desktop with OpenGL, X11/XWayland, and an unlocked Secret Service keyring. Install GW2 through Wine or Proton first, then select that runner and prefix in Settings. Proton uses `umu-run` and your installed Proton directory. For other distributions, build from source.
 
 Choose ArenaNet for email/password accounts, including when using game files installed through Steam or Epic. Choose Steam for mobile QR sign-in or password and Steam Guard. Choose Epic to sign in and approve Guild Wars 2 in your browser; the account appears in the launcher automatically. Name the account and choose Add account. Epic uses the selected game installation and requests only basic profile access. Saved accounts launch independently without repeating browser sign-in.
 
@@ -37,6 +39,8 @@ cmake --build --preset debug
 Configure once before building: `--build` does not create a missing build directory. `cmake --workflow --preset debug` configures and builds in one command. Use `release` instead of `debug` for optimized builds.
 
 Both `cmake --build --preset debug` and `cmake --build --preset release` build the complete app and its installer automatically. Executables go in `build/<preset>/bin`; the Windows setup `.exe` or Linux `.deb` goes directly in `build/<preset>`. Unchanged builds skip repackaging.
+
+To publish a release, increase `project(... VERSION ...)` in `CMakeLists.txt` and push to `main`. GitHub Actions builds both installers, then publishes `v<version>` with generated release notes. Existing published versions are never replaced. Pull requests build the packages without publishing. Installers are available on the [Releases page](https://github.com/Dvow/gw2-multi-launcher/releases).
 
 On Windows, run these commands in an x64 Visual Studio developer shell. Install Inno Setup 6/7 or set `GW2_ISCC` to its `ISCC.exe` when configuring.
 

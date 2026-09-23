@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.30)
-project(GW2MultiLauncher VERSION 0.2.5 LANGUAGES C CXX)
+project(GW2MultiLauncher VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,7 +55,8 @@ target_sources(game PUBLIC FILE_SET CXX_MODULES FILES src/game.cppm)
 add_executable(gw2-multi-launcher WIN32 src/main.cpp src/accounts.cpp src/epic.cpp)
 set_target_properties(gw2-multi-launcher PROPERTIES OUTPUT_NAME GW2MultiLauncher)
 target_sources(gw2-multi-launcher PRIVATE FILE_SET CXX_MODULES FILES
-  src/platform.cppm src/accounts.cppm src/epic.cppm src/session.cppm src/app.cppm src/ui.cppm)
+  src/platform.cppm src/accounts.cppm src/epic.cppm src/session.cppm src/update.cppm src/app.cppm src/ui.cppm)
+target_compile_definitions(gw2-multi-launcher PRIVATE GW2_APP_VERSION="${PROJECT_VERSION}")
 target_include_directories(gw2-multi-launcher PRIVATE "${CMAKE_BINARY_DIR}")
 target_link_libraries(gw2-multi-launcher PRIVATE game imgui nlohmann_json::nlohmann_json)
 

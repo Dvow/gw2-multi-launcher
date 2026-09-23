@@ -7,6 +7,7 @@ module;
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -24,6 +25,7 @@ import platform;
 import accounts;
 import session;
 import epic;
+import update;
 
 export namespace gw2 {
 enum class Action {
@@ -35,6 +37,8 @@ enum class Action {
     show,
     close,
     closeAll,
+    checkUpdate,
+    installUpdate,
     connect,
     guard,
     cancelConnect,
@@ -65,6 +69,7 @@ struct Snapshot {
         bool connected{};
     } auth;
     Catalog catalog;
+    AppUpdate update;
     std::vector<SessionView> sessions;
     std::string error, editId, editEmail;
     std::uint64_t completed{};
@@ -101,6 +106,7 @@ class App {
     std::unique_ptr<SteamConnection> auth_;
     std::optional<EpicConnection> epic_;
     Secret connectedSession_;
+    std::future<AppUpdate> updateTask_;
     std::jthread worker_;
 
     void publish() {
@@ -108,7 +114,8 @@ class App {
         state_.sessions.clear();
         for (const auto &s : sessions_)
             state_.sessions.push_back(s.view);
-        state_.busy = !launches_.empty() || blocked();
+        state_.busy = !launches_.empty() || blocked() || state_.update.stage == UpdateStage::installing ||
+            state_.update.stage == UpdateStage::installed;
         if (store_) state_.catalog = store_->catalog();
         {
             std::lock_guard lock(mutex_);
@@ -363,6 +370,10 @@ class App {
         case Action::launch:
             queueLaunch(command, stop);
             break;
+        case Action::checkUpdate:
+        case Action::installUpdate:
+            beginUpdate(command.action == Action::installUpdate, stop);
+            break;
         case Action::show:
             for (auto &session : sessions_)
                 if (session.view.id == command.id && session.view.active) session.show = true;
@@ -405,7 +416,8 @@ class App {
         try {
             if (command.action != Action::show && command.action != Action::close &&
                 command.action != Action::guard && command.action != Action::cancelConnect &&
-                command.action != Action::displayName && command.action != Action::cancelSetup && state_.busy)
+                command.action != Action::displayName && command.action != Action::cancelSetup &&
+                command.action != Action::checkUpdate && state_.busy)
                 throw std::runtime_error("Wait for the current launch or update to finish.");
             dispatch(command, stop);
         } catch (const std::exception &e) {
@@ -584,10 +596,41 @@ class App {
         }
         return true;
     }
+    void beginUpdate(bool install, std::stop_token stop) {
+        if (updateTask_.valid()) return;
+        if (install && (running() || state_.auth.busy || !launches_.empty()))
+            throw std::runtime_error("Close your games and finish signing in before updating the launcher.");
+        if (install && state_.update.stage != UpdateStage::available)
+            throw std::runtime_error("Check for updates before installing.");
+        if (!install) state_.update = {};
+        const auto release = state_.update;
+        updateTask_ = std::async(std::launch::async, [release, install, stop] {
+            if (!install) return checkAppUpdate(stop);
+            installAppUpdate(release, stop);
+            auto result = release;
+            result.stage = UpdateStage::installed;
+            return result;
+        });
+        state_.update.error.clear();
+        state_.update.stage = install ? UpdateStage::installing : UpdateStage::checking;
+    }
+    bool pollUpdate() {
+        if (!updateTask_.valid() ||
+            updateTask_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return false;
+        try {
+            state_.update = updateTask_.get();
+        } catch (const std::exception &e) {
+            state_.update.stage = state_.update.version.empty() ? UpdateStage::idle : UpdateStage::available;
+            state_.update.error = e.what();
+        }
+        return true;
+    }
     void run(std::stop_token stop) {
         try {
             store_ = std::make_unique<Store>();
             state_.ready = true;
+            if (store_->catalog().autoUpdate) beginUpdate(false, stop);
             publish();
         } catch (const std::exception &e) {
             state_.error = e.what();
@@ -606,6 +649,7 @@ class App {
                 execute(std::move(command), stop);
             }
             bool change = saveWindow();
+            change |= pollUpdate();
             change |= pollAuthentication(stop);
             for (auto &session : sessions_)
                 if (session.view.active) change |= poll(session, stop);
@@ -625,10 +669,11 @@ class App {
             if (!stop.stop_requested() && commands_.empty())
                 changed_.wait_for(lock,
                     std::chrono::milliseconds((running() || auth_) ? 10
-                            : window_                              ? 50
+                            : window_ || updateTask_.valid()       ? 50
                                                                    : 1000));
         }
         saveWindow(true);
+        if (updateTask_.valid()) updateTask_.wait();
         clearAuthentication();
         sessions_.clear();
         store_.reset();
