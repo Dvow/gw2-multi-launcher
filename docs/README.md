@@ -5,7 +5,7 @@ Several Guild Wars 2 accounts. One copy of the game.
 Launch one account, or all of them. Each account opens in its own window. Closing the launcher leaves the game open.
 
 <p align="center">
-  <img src="accounts.png" width="280" alt="Account list">
+  <img src="account-list.png" width="280" alt="Account list">
 </p>
 
 Add an account with ArenaNet, Steam, or Epic. You sign in once, then just launch.
