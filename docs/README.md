@@ -10,6 +10,13 @@ Launch one account, or all of them. Each account opens in its own window. Closin
 
 Add an account with ArenaNet, Steam, or Epic. You sign in once, then just launch.
 
+If GW2 asks for a verification code, the waiting account expands and scrolls into
+view. Email prompts show the saved ArenaNet email address so you know which inbox
+to check. Enter the emailed, SMS, or authenticator code and press Enter or the check
+button to continue. Verification automatically enables GW2's Remember network
+option. The launcher requests focus and flashes its taskbar button
+when attention is needed.
+
 <p align="center">
   <img src="arenanet.png" width="220" alt="Add an ArenaNet account">
   <img src="steam.png" width="220" alt="Sign in to Steam">

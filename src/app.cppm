@@ -41,6 +41,7 @@ enum class Action {
     installUpdate,
     connect,
     guard,
+    verify,
     cancelConnect,
     displayName,
     cancelSetup
@@ -52,16 +53,19 @@ struct Command {
     std::vector<std::string> ids{};
     std::vector<std::string> dlls{};
     Secret password{};
+    unsigned pid{};
     Provider provider{};
     Catalog settings{};
 };
 struct SessionView {
     std::string id, status;
-    unsigned state{}, pid{};
+    std::string email{};
+    unsigned state{}, pid{}, verification{};
     bool active{}, canShow{};
-    bool canClose() const { return active && state == 4 && !id.empty(); }
+    bool needsVerification() const { return active && (state == 12 || state == 13); }
+    bool canClose() const { return active && (state == 4 || needsVerification()) && !id.empty(); }
     bool blocking() const {
-        return active && (id.empty() || state < 4 || state == 9 || state == 10 || state == 11);
+        return active && (id.empty() || state < 4 || state == 9 || state == 10 || state == 11 || needsVerification());
     }
 };
 struct Snapshot {
@@ -84,7 +88,7 @@ struct Snapshot {
 };
 
 class App {
-    static constexpr std::uint32_t magic = 0x35585747;
+    static constexpr std::uint32_t magic = 0x36585747;
     struct Session {
         SessionView view;
         std::unique_ptr<Process> process;
@@ -236,6 +240,9 @@ class App {
                 gameRequest(bytes, catalog, account, dlls);
                 auto secret =
                     account.provider == Provider::epic ? std::move(epicRequest) : openAccount(account, stop);
+                if (account.provider == Provider::arenaNet)
+                    session.view.email = fromUtf16(
+                        std::span(secret.bytes).subspan(8, (number(secret.bytes) + 1) * 2));
                 // Reserve before copying the password, so vector growth cannot leave
                 // abandoned plaintext allocations behind.
                 bytes.reserve(bytes.size() + 5 + secret.bytes.size());
@@ -342,6 +349,30 @@ class App {
             auth_->send(2, fields.bytes);
         }
     }
+    void verify(Command &command) {
+        auto found = std::ranges::find_if(sessions_, [&](const Session &s) {
+            return s.view.id == command.id && s.view.active && s.view.state == 12 &&
+                s.view.pid == command.pid && !s.closeRequested;
+        });
+        if (found == sessions_.end() || !found->outgoing.bytes.empty())
+            throw std::runtime_error("This verification request has ended. Check the account's status.");
+        const auto &code = command.password.bytes;
+        const auto digits = found->view.verification == 6 ? 6u : 5u;
+        if ((found->view.verification != 1 && found->view.verification != 5 && found->view.verification != 6) ||
+            code.size() != (digits + 1) * 2 || code[code.size() - 2] || code.back())
+            throw std::runtime_error("Enter the complete verification code.");
+        for (std::size_t i = 0; i < code.size() - 2; i += 2)
+            if (code[i] < '0' || code[i] > '9' || code[i + 1])
+                throw std::runtime_error("The verification code must contain only digits.");
+        auto &bytes = found->outgoing.bytes;
+        bytes.reserve(5 + code.size());
+        bytes.push_back(6);
+        appendNumber(bytes, static_cast<std::uint32_t>(code.size()));
+        bytes.insert(bytes.end(), code.begin(), code.end());
+        found->view.state = 13;
+        found->view.status = "Checking verification code…";
+        found->deadline = SDL_GetTicks() + 130000;
+    }
     void closeSession(Session &session) {
         if (!session.view.canClose() || !session.outgoing.bytes.empty()) return;
         session.outgoing.bytes.push_back(5);
@@ -403,6 +434,9 @@ class App {
         case Action::cancelConnect:
             clearAuthentication();
             break;
+        case Action::verify:
+            verify(command);
+            break;
         case Action::connect:
             if (command.provider == Provider::epic)
                 connectEpic(command, stop);
@@ -427,7 +461,7 @@ class App {
         state_.editEmail.clear();
         try {
             if (command.action != Action::show && command.action != Action::close &&
-                command.action != Action::guard && command.action != Action::cancelConnect &&
+                command.action != Action::guard && command.action != Action::verify && command.action != Action::cancelConnect &&
                 command.action != Action::displayName && command.action != Action::cancelSetup &&
                 command.action != Action::checkUpdate && state_.busy)
                 throw std::runtime_error("Wait for the current launch or update to finish.");
@@ -523,12 +557,16 @@ class App {
             throw std::runtime_error(
                 "The Wine/Proton runner changed the helper protocol. Use wine or umu-run directly.");
         const auto state = number(session.record, 4), detail = number(session.record, 8);
-        if (state < 1 || state > 11 || (session.view.id.empty() ? state < 5 || state > 8
-                                        : state > 6 && state != 9 && state != 10 && state != 11))
+        if (state < 1 || state > 13 || (session.view.id.empty() ? state < 5 || state > 8
+                                        : state == 7 || state == 8))
             throw std::runtime_error("Unexpected game helper status.");
+        if ((state == 12 || state == 13) && detail != 1 && detail != 2 && detail != 4 && detail != 5 && detail != 6)
+            throw std::runtime_error("Unknown GW2 verification request. Select Show to check the game.");
         if (state == 1) session.view.pid = detail;
         if (state == 5 || state == 8) session.view.pid = 0;
         session.view.state = session.failed && state != 5 ? 6 : state;
+        session.view.verification = state == 12 || state == 13 ? detail : 0;
+        if (state == 3 || state == 4 || state == 5 || state == 6) session.view.email.clear();
         if (state == 6) {
             session.failed = true;
             session.view.status = failure(detail);
@@ -537,14 +575,15 @@ class App {
         } else if (!session.failed) {
             constexpr const char *statuses[]{"", "Starting…", "Signing in…", "Opening game…", "Running",
                 "Client exited", "", "Updating GW2…", "Updated", "Choose a GW2 display name",
-                "Review GW2's agreement", "Loading DLLs…"};
+                "Review GW2's agreement", "Loading DLLs…", "Verification required", "Checking verification code…"};
             session.view.status = statuses[state];
             if (state == 11) session.view.status = "Loading DLL " + std::to_string(detail) + "…";
+            if (state == 12 && detail == 5) session.view.status = "Check your email";
         }
-        if (state == 1 || state == 2 || state == 3 || state == 4 || state == 7 || state == 10 || state == 11)
+        if (state == 1 || state == 2 || state == 3 || state == 4 || state == 7 || state == 10 || state >= 11)
             session.view.canShow = true;
         if (state == 9) session.view.canShow = false;
-        session.deadline = SDL_GetTicks() + (state == 2 ? 130000 : 100000);
+        session.deadline = SDL_GetTicks() + (state == 2 || state == 13 ? 130000 : 100000);
         if (state == 8) {
             const Image image(path(store_->catalog().gamePath));
             if (image.build() < wantedBuild_)
@@ -576,7 +615,7 @@ class App {
                 receiveStatus(session);
                 changed = true;
             }
-            if (session.view.active && (session.view.state < 4 || session.view.state == 11) &&
+            if (session.view.active && (session.view.state < 4 || session.view.state == 11 || session.view.state == 13) &&
                 SDL_GetTicks() > session.deadline)
                 throw std::runtime_error("The game helper timed out before opening the game. Check your "
                                          "runner and the GW2 window.");
@@ -589,6 +628,7 @@ class App {
             session.failed = true;
             session.view.active = session.view.canShow = false;
             session.view.pid = 0;
+            session.view.email.clear();
             session.process.reset();
             session.outgoing.clear();
             launches_.clear();

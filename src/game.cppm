@@ -23,7 +23,7 @@ struct Layout {
     std::uint32_t timestamp{}, imageSize{}, build{}, context{}, contextTable{}, login{};
     std::uint32_t launcher{}, launcherTable{}, connection{}, play{}, tokenLogin{}, tokenSubmit{},
         preferences{};
-    std::array<Anchor, 24> anchors{};
+    std::array<Anchor, 26> anchors{};
 };
 
 // PE addresses are checked against file sections before they become an offset.
@@ -216,6 +216,15 @@ class Image {
         anchor(result, 9, result.tokenLogin + 128, 51);
         anchor(result, 10, prefsGetter, 8);
         anchor(result, 11, result.tokenSubmit, 64);
+        // This query supplies the provider byte in both native game handshakes.
+        // Its normal source is the embedded store SDK, which our session replaces.
+        const auto channel = find("48 83 EC 28 E8 ? ? ? ? 85 C0 74 0A B8 01 00 00 00 48 83 C4 28 C3 "
+                                  "E8 ? ? ? ? F7 D8 1B C0 83 E0 02 48 83 C4 28 C3");
+        require(matches(relative(channel + 4, 1, 5), "8B 05 ? ? ? ? C3") &&
+            matches(relative(channel + 23, 1, 5), "8B 05 ? ? ? ? C3"));
+        anchor(result, 16, channel, 40);
+    }
+    void resolveNotifications(Layout &result) const {
         const auto subscribe = pointer(result.contextTable + 128);
         require(matches(subscribe, "48 89 5C 24 ? 57 48 83 EC 20 48 8B 41 40 48 8D 59 38 48 8B FA 48 85 C0"));
         require(matches(result.anchors[6].rva + 16, "48 8D 05 ? ? ? ? 48 89 69 28 48 89 41 08"));
@@ -237,13 +246,16 @@ class Image {
             "49 89 49 40 48 8B 50 08 48 8B 48 10 48 85 D2 74 11 48 89 4A 10 49 8B 49 50 "
             "48 89 48 08 49 89 41 50 C3 49 89 49 48 49 8B 49 50 48 89 48 08 49 89 41 50 C3"));
         anchor(result, 20, unsubscribe, 101);
-        // This query supplies the provider byte in both native game handshakes.
-        // Its normal source is the embedded store SDK, which our session replaces.
-        const auto channel = find("48 83 EC 28 E8 ? ? ? ? 85 C0 74 0A B8 01 00 00 00 48 83 C4 28 C3 "
-                                  "E8 ? ? ? ? F7 D8 1B C0 83 E0 02 48 83 C4 28 C3");
-        require(matches(relative(channel + 4, 1, 5), "8B 05 ? ? ? ? C3") &&
-            matches(relative(channel + 23, 1, 5), "8B 05 ? ? ? ? C3"));
-        anchor(result, 16, channel, 40);
+        // GW2's codeAuth/SMS/TOTP browser callbacks all use context slot 11.
+        // Notification slot 0 reports the server-selected authentication type.
+        const auto verify = pointer(result.contextTable + 88);
+        const auto challenge = pointer(noticeTable);
+        require(matches(verify, "48 8B CA 41 8B D0 E9") &&
+            matches(relative(verify + 6, 1, 5), "E9"));
+        require(matches(challenge,
+            "40 53 57 48 83 EC 58 48 83 B9 98 00 00 00 00 8B DA 48 8B F9"));
+        anchor(result, 24, verify, 11);
+        anchor(result, 25, challenge, 128);
     }
 
   public:
@@ -305,6 +317,7 @@ class Image {
         result.imageSize = size_;
         resolveCore(result);
         resolveAgreement(result);
+        resolveNotifications(result);
         if (provider) resolveToken(result);
         if (provider == 2) {
             const auto login =

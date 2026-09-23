@@ -14,7 +14,7 @@ extern "C" __declspec(dllimport) DWORD __cdecl KxExecute(
     HWND, DWORD, DWORD, const wchar_t *, const wchar_t *, DWORD *, DWORD *, DWORD *, const gw2::Layout *);
 
 namespace {
-constexpr DWORD Magic = 0x35585747; // Protocol 5: launch settings/DLLs, then credential/control messages.
+constexpr DWORD Magic = 0x36585747; // Protocol 6: launch settings, credentials and verification/control messages.
 struct Failure {
     DWORD code;
 };
@@ -180,12 +180,16 @@ void Reveal(Client &client, bool focus = false) {
 std::atomic<unsigned> control{1}; // Connected, Show requested, invalid command.
 struct RegistrationInput {
     std::mutex mutex;
-    Secrets request;
+    Secrets request, code;
 };
 RegistrationInput &registration = *new RegistrationInput;
 Secrets TakeCredentials() {
     std::lock_guard lock(registration.mutex);
     return std::move(registration.request);
+}
+Secrets TakeCode() {
+    std::lock_guard lock(registration.mutex);
+    return std::move(registration.code);
 }
 DWORD WINAPI ReadControl(void *parameter) {
     const auto operation = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(parameter));
@@ -201,6 +205,26 @@ DWORD WINAPI ReadControl(void *parameter) {
         if (command == 4) {
             control.fetch_or(8);
             continue;
+        }
+        if (command == 6) {
+            try {
+                const auto size = Number();
+                if (size != 12 && size != 14) throw Failure{1000};
+                Secrets code;
+                code.bytes.resize(size);
+                Read(code.bytes.data(), size);
+                const auto text = reinterpret_cast<const wchar_t *>(code.bytes.data());
+                if (text[size / 2 - 1]) throw Failure{1000};
+                for (DWORD i = 0; i < size / 2 - 1; ++i)
+                    if (text[i] < L'0' || text[i] > L'9') throw Failure{1000};
+                std::lock_guard lock(registration.mutex);
+                if (!registration.code.bytes.empty()) throw Failure{1000};
+                registration.code = std::move(code);
+                continue;
+            } catch (...) {
+                control.fetch_or(4);
+                break;
+            }
         }
         if (command == 3) {
             try {
@@ -239,7 +263,8 @@ bool Control(Client &client) {
     }
     if (state & 16) {
         Observe(client);
-        if (client.game && !PostMessageW(client.game, WM_CLOSE, 0, 0)) throw Failure{1008};
+        const auto window = client.game ? client.game : client.login;
+        if (window && !PostMessageW(window, WM_CLOSE, 0, 0)) throw Failure{1008};
     }
     return true;
 }
@@ -300,7 +325,8 @@ void Update(const std::wstring &executable, const std::wstring &folder, Client &
     Report(8);
 }
 struct Launch {
-    enum Phase { starting = 1, signingIn, launching, running, registration = 9, cancelling, agreement };
+    enum Phase { starting = 1, signingIn, launching, running, registration = 9, cancelling, agreement,
+        verification, checkingCode };
     Client &client;
     HANDLE process;
     DWORD operation;
@@ -339,9 +365,18 @@ struct Launch {
         }
     }
     void signedIn() {
+        if (client.game) {
+            Reveal(client);
+            Report(4);
+            phase = running;
+            return;
+        }
         if (!client.login) throw Failure{1004};
         const auto result = Native(client, 4, flags);
-        if (result == 8 && operation >= 2) {
+        if (result == 12) {
+            if (phase != verification) Report(12, (flags >> 24) & 7);
+            phase = verification;
+        } else if (result == 8 && operation >= 2) {
             Report(9);
             phase = registration;
         } else if (result == 10) {
@@ -356,6 +391,17 @@ struct Launch {
         } else if (result != 1 || !(flags & (2 | 4)))
             throw Failure{1004};
     }
+    void verify() {
+        auto code = TakeCode();
+        if (code.bytes.empty() || phase != verification) return;
+        const auto type = (flags >> 24) & 7;
+        const auto result = Native(client, 9, flags, nullptr,
+            reinterpret_cast<const wchar_t *>(code.bytes.data()));
+        if (result != 1 && result != 4) throw Failure{1004};
+        Report(13, type);
+        phase = checkingCode;
+        deadline = GetTickCount64() + 120000;
+    }
     void observe() {
         // If native acceptance needs attention, reveal its prompt and observe
         // continuation without repeatedly accepting or invoking Play.
@@ -369,7 +415,7 @@ struct Launch {
             Report(4);
             phase = running;
         }
-        if ((phase < running || phase == cancelling) && GetTickCount64() > deadline)
+        if ((phase < running || phase == cancelling || phase == checkingCode) && GetTickCount64() > deadline)
             throw Failure{WAIT_TIMEOUT};
     }
     void run() {
@@ -381,7 +427,8 @@ struct Launch {
             Observe(client);
             if (phase != running && (client.dialog || (client.login && !IsWindowEnabled(client.login))))
                 throw Failure{1003};
-            if (client.hide && (phase < running || phase == registration) && client.login &&
+            if (client.hide && (phase < running || phase == registration || phase == verification ||
+                    phase == checkingCode) && client.login &&
                 IsWindowVisible(client.login))
                 ShowWindowAsync(client.login, SW_HIDE);
             // Loading GW2 and fetching a platform token overlap. Only validated
@@ -413,7 +460,8 @@ struct Launch {
                 if (!secret.bytes.empty()) signIn();
             }
             if (phase == registration) setup();
-            if (phase == signingIn) signedIn();
+            if (phase == verification) verify();
+            if (phase == signingIn || phase == verification || phase == checkingCode) signedIn();
             observe();
             Sleep(phase == running ? 100 : 16);
         }

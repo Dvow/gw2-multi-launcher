@@ -247,6 +247,10 @@ struct Form {
     std::array<char, 1281> email{};
     std::array<char, 1025> password{};
     std::array<char, 6> guard{};
+    std::array<char, 7> verificationCode{};
+    std::string verificationId;
+    unsigned verificationPid{};
+    bool focusVerification{};
     std::array<char, 28> displayName{};
     std::string displayNameId;
     Provider provider{};
@@ -260,7 +264,10 @@ struct Form {
     Action pendingAction{};
     std::shared_ptr<Picker> picker;
     unsigned pickerField{};
-    ~Form() { wipe(password.data(), password.size()); }
+    ~Form() {
+        wipe(password.data(), password.size());
+        wipe(verificationCode.data(), verificationCode.size());
+    }
     void clearPassword() {
         wipe(password.data(), password.size());
         clearInputMemory();
@@ -333,6 +340,16 @@ struct Form {
             snapshot.auth.connected && snapshot.auth.id == id && snapshot.auth.provider == provider;
         if (page == Page::account && !id.empty() && signedIn && !connected) edited = true;
         connected = signedIn;
+        if (!verificationId.empty()) {
+            const auto session = snapshot.session(verificationId);
+            if (!session || !session->needsVerification() || session->pid != verificationPid) {
+                wipe(verificationCode.data(), verificationCode.size());
+                verificationId.clear();
+                verificationPid = 0;
+                focusVerification = false;
+                clearInputMemory();
+            }
+        }
         if (!displayNameId.empty()) {
             const auto session = snapshot.session(displayNameId);
             if (!session || !session->active || session->state == 4) {
@@ -718,6 +735,40 @@ void registrationFields(Form &form, const std::string &id, float width) {
     if (iconButton(Icon::close, "Cancel account setup"))
         form.request({.action = Action::cancelSetup, .id = id});
 }
+void verificationFields(Form &form, const SessionView &session, float width, bool focus) {
+    const bool code = session.verification == 1 || session.verification == 5 || session.verification == 6;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
+    if ((session.verification == 4 || session.verification == 5) && !session.email.empty())
+        ImGui::Text("Email: %s", session.email.c_str());
+    ImGui::TextUnformatted(session.verification == 5 ? "Enter the five-digit code from your email."
+        : session.verification == 1 ? "Enter the five-digit code from your text message."
+        : session.verification == 6 ? "Enter the six-digit code from your authenticator."
+        : session.verification == 4 ? "Approve this login using the link in your email."
+                                   : "Approve this login in your authenticator app.");
+    ImGui::PopTextWrapPos();
+    if (!code) return;
+    const auto digits = session.verification == 6 ? 6u : 5u;
+    ImGui::BeginDisabled(session.state == 13);
+    if (focus) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(width - 36 * ImGui::GetStyle().FontScaleDpi);
+    const bool enter = ImGui::InputTextWithHint("##verification", "Verification code",
+        form.verificationCode.data(), digits + 1,
+        ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_NoUndoRedo);
+    ImGui::SameLine();
+    const std::string_view value(form.verificationCode.data());
+    const bool valid = value.size() == digits &&
+        std::ranges::all_of(value, [](char c) { return c >= '0' && c <= '9'; });
+    ImGui::BeginDisabled(!valid);
+    const bool submit = iconButton(Icon::check, "Verify & continue", true);
+    ImGui::EndDisabled();
+    if (valid && session.state == 12 && (enter || submit)) {
+        form.request({.action = Action::verify, .id = session.id,
+            .password = utf16(value), .pid = session.pid});
+        wipe(form.verificationCode.data(), form.verificationCode.size());
+        clearInputMemory();
+    }
+    ImGui::EndDisabled();
+}
 void removeAccount(Form &form) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Remove?");
@@ -782,7 +833,8 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     const auto found = state.session(id);
     const auto &session = found ? *found : ready;
     const bool registration = account && session.active && session.state == 9;
-    bool expanded = registration || (form.page == Form::Page::account && form.id == id);
+    const bool verification = account && session.needsVerification();
+    bool expanded = registration || verification || (form.page == Form::Page::account && form.id == id);
     const bool busy = form.pending || form.picker || state.busy;
     ImGui::PushID(account ? account->id.c_str() : "new-account");
     auto storage = ImGui::GetStateStorage();
@@ -876,15 +928,18 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         if (iconButton(Icon::close, "Cancel new account")) form.go(Form::Page::accounts);
         ImGui::EndDisabled();
     }
-    expanded = registration || (form.page == Form::Page::account && form.id == id);
+    expanded = registration || verification || (form.page == Form::Page::account && form.id == id);
     if (expanded) {
         auto window = ImGui::GetCurrentWindow();
         const auto measured = window->DC.CursorMaxPos;
         ImGui::PushClipRect({row.x, row.y + header}, {row.x + width, row.y + total}, true);
         ImGui::SetCursorScreenPos({pos.x, row.y + header + 4 * scale});
         ImGui::BeginGroup();
-        ImGui::BeginDisabled(form.pending || reveal < 1 || (!registration && busy));
-        if (registration)
+        ImGui::BeginDisabled(form.pending || reveal < 1 || (!registration && !verification && busy));
+        if (verification)
+            verificationFields(form, session, available,
+                form.focusVerification && form.verificationId == id && reveal == 1 && !form.pending && !form.picker);
+        else if (registration)
             registrationFields(form, id, available);
         else
             accountFields(account, app, form, state, available, nativeWindow);
@@ -898,6 +953,10 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     }
     ImGui::SetCursorScreenPos(row);
     ImGui::Dummy({width, total});
+    if (verification && form.focusVerification && form.verificationId == id) {
+        ImGui::SetScrollHereY(0.5f);
+        if (reveal == 1 && !form.pending && !form.picker) form.focusVerification = false;
+    }
     ImGui::PopID();
 }
 
@@ -1292,9 +1351,27 @@ int run() {
     bool open = true;
     bool restored{};
     WindowState observed;
+    std::shared_ptr<const Snapshot> previous;
     while (open) {
         if (!pollEvents(app, form, window.get(), context)) form.go(Form::Page::exit);
         const auto snapshot = app.snapshot();
+        if (snapshot != previous) {
+            for (const auto &session : snapshot->sessions) {
+                if (!session.active || session.state != 12) continue;
+                const auto old = previous ? previous->session(session.id) : nullptr;
+                if (old && old->active && old->pid == session.pid && old->state == 12) continue;
+                wipe(form.verificationCode.data(), form.verificationCode.size());
+                form.verificationId = session.id;
+                form.verificationPid = session.pid;
+                form.focusVerification = true;
+                if (form.page == Form::Page::settings) form.go(Form::Page::accounts);
+                if (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_MINIMIZED) SDL_RestoreWindow(window.get());
+                SDL_RaiseWindow(window.get());
+                SDL_FlashWindow(window.get(), SDL_FLASH_UNTIL_FOCUSED);
+                break;
+            }
+            previous = snapshot;
+        }
         if (!restored && (snapshot->ready || snapshot->fatal)) {
             observed = snapshot->catalog.window;
             restoreWindow(window.get(), observed);

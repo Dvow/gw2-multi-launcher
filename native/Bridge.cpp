@@ -101,7 +101,7 @@ DWORD ReleaseInstanceMutex() {
 }
 
 namespace {
-constexpr wchar_t MessageName[] = L"KX.GW2MultiLauncher.Native.10";
+constexpr wchar_t MessageName[] = L"KX.GW2MultiLauncher.Native.11";
 constexpr DWORD Magic = 0x31584B47;
 
 enum Operation : DWORD {
@@ -113,7 +113,8 @@ enum Operation : DWORD {
     SteamLogin = 5,
     ObservePlay = 6,
     EpicLogin = 7,
-    LoadDll = 8
+    LoadDll = 8,
+    VerifyCode = 9
 };
 enum Result : DWORD {
     Pending = 0,
@@ -127,7 +128,8 @@ enum Result : DWORD {
     NameRequired = 8,
     AuthenticationError = 9,
     AgreementRequired = 10,
-    LoadingDll = 11
+    LoadingDll = 11,
+    VerificationRequired = 12
 };
 
 // One fixed value packet. No host-process pointers are meaningful to the hook.
@@ -191,7 +193,7 @@ bool IsReadable(const void *address, SIZE_T size) {
 // callback into an unloaded DLL. Only the launcher's owner thread reads/writes it.
 struct LoginObserver {
     const std::uintptr_t *table{};
-    DWORD thread{}, error{};
+    DWORD thread{}, error{}, verification{};
     void *context{};
     void(__fastcall *unsubscribe)(void *, void *){};
     HWND window{};
@@ -227,9 +229,15 @@ void __fastcall LoginError(void *self, const unsigned short *error, unsigned, un
     if (self != &loginObserver || GetCurrentThreadId() != loginObserver.thread) return;
     __try {
         if (IsReadable(error, sizeof(*error))) loginObserver.error = *error;
+        loginObserver.verification = 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        loginObserver.error = 0;
+        loginObserver.error = loginObserver.verification = 0;
     }
+}
+void __fastcall LoginChallenge(void *self, unsigned type) {
+    if (self != &loginObserver || GetCurrentThreadId() != loginObserver.thread) return;
+    loginObserver.verification = type;
+    loginObserver.error = 0;
 }
 
 LRESULT CALLBACK LoginWindow(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR);
@@ -274,9 +282,9 @@ struct NativeRequest {
             return UnsupportedBuild;
         if (channelHook.original.rva && !layout.tokenLogin) return InvalidRequest;
         for (const auto &anchor : layout.anchors) {
-            if (&anchor >= &layout.anchors[21] && !layout.anchors[21].rva) continue;
-            if (((&anchor >= &layout.anchors[8] && &anchor <= &layout.anchors[14]) ||
-                    &anchor == &layout.anchors[16] || &anchor == &layout.anchors[20]) &&
+            if (&anchor >= &layout.anchors[21] && &anchor <= &layout.anchors[23] && !layout.anchors[21].rva) continue;
+            if (((&anchor >= &layout.anchors[8] && &anchor <= &layout.anchors[11]) ||
+                    &anchor == &layout.anchors[16]) &&
                 !layout.tokenLogin)
                 continue;
             const auto *expected = &anchor;
@@ -317,10 +325,17 @@ struct NativeRequest {
         return Completed;
     }
     DWORD play() {
-        if (layout.tokenLogin && loginObserver.thread == GetCurrentThreadId() && loginObserver.error &&
+        if (loginObserver.thread == GetCurrentThreadId() && loginObserver.error &&
             !connected && !(flags & (2 | 4))) {
             request->exceptionCode = loginObserver.error;
             return loginObserver.error == 3061 ? NameRequired : AuthenticationError;
+        }
+        if (!connected && (flags & 2) && loginObserver.thread == GetCurrentThreadId() &&
+            loginObserver.verification) {
+            const auto type = loginObserver.verification;
+            if (type != 1 && type != 2 && type != 4 && type != 5 && type != 6) return InvalidRequest;
+            request->flags |= type << 24;
+            return VerificationRequired;
         }
         if (!connected || (flags & (2 | 4)) != 0)
             return request->operation == PlayIfAuthenticated ? Completed : Busy;
@@ -354,6 +369,7 @@ struct NativeRequest {
         for (auto &notification : loginNotifications)
             notification = base + layout.anchors[14].rva;
         loginNotifications[11] = reinterpret_cast<std::uintptr_t>(&LoginError);
+        loginNotifications[0] = reinterpret_cast<std::uintptr_t>(&LoginChallenge);
         loginObserver.table = loginNotifications;
         loginObserver.thread = GetCurrentThreadId();
         using Subscribe = void(__fastcall *)(void *, void *);
@@ -404,7 +420,7 @@ struct NativeRequest {
             request->exceptionCode = 1007;
             return NativeFault;
         }
-        loginObserver.error = 0;
+        loginObserver.error = loginObserver.verification = 0;
         reinterpret_cast<SigningIn>(base + layout.anchors[7].rva)(context);
         const auto value22 = reinterpret_cast<Number>(getters[22])(preferences);
         const auto value18 = reinterpret_cast<Text>(getters[18])(preferences);
@@ -447,11 +463,30 @@ struct NativeRequest {
             const auto result = platformLogin(window);
             if (result != Completed) return result;
         } else {
+            const auto result = subscribe(window);
+            if (result != Completed) return result;
+            loginObserver.error = loginObserver.verification = 0;
             using NativeLogin = void(__fastcall *)(void *, const wchar_t *, const wchar_t *, unsigned);
             reinterpret_cast<NativeLogin>(table[0])(context, request->email, request->password, 3);
         }
         request->flags = *reinterpret_cast<const DWORD *>(reinterpret_cast<const BYTE *>(context) + 16);
         return Completed; // Submission acknowledged; this does not mean authenticated.
+    }
+    DWORD verify() {
+        const auto type = loginObserver.verification;
+        if (connected || !(flags & 2) || loginObserver.thread != GetCurrentThreadId() ||
+            (type != 1 && type != 5 && type != 6)) return Busy;
+        const auto length = type == 6 ? 6u : 5u;
+        if (wcsnlen_s(request->password, 8) != length) return InvalidRequest;
+        for (unsigned i = 0; i < length; ++i)
+            if (request->password[i] < L'0' || request->password[i] > L'9') return InvalidRequest;
+        if (table[11] != base + layout.anchors[24].rva) return UnsupportedBuild;
+        // Consume only this observed challenge. GW2 copies the code during the
+        // owner-thread call; a later native event proves acceptance or rejection.
+        loginObserver.verification = loginObserver.error = 0;
+        using SubmitCode = void(__fastcall *)(void *, const wchar_t *, unsigned);
+        reinterpret_cast<SubmitCode>(table[11])(context, request->password, 1); // Remember this network.
+        return Completed;
     }
     DWORD apply(HWND window) {
         const auto result = validate(window);
@@ -466,6 +501,8 @@ struct NativeRequest {
         case PlayIfAuthenticated:
         case ObservePlay:
             return play();
+        case VerifyCode:
+            return verify();
         default:
             return login(window);
         }
@@ -547,7 +584,7 @@ void ReceiveRequest(const CWPSTRUCT &message) {
     View view{static_cast<Packet *>(
         MapViewOfFile(mapping.value, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(Packet)))};
     auto p = view.value;
-    if (!p || p->magic != Magic || p->version != 10 || p->nonce != nonce ||
+    if (!p || p->magic != Magic || p->version != 11 || p->nonce != nonce ||
         p->targetPid != GetCurrentProcessId() || p->result != Pending)
         return;
     if (p->operation == LoadDll) {
@@ -579,7 +616,9 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
     *exceptionCode = 0;
     DWORD actualPid{};
     const auto thread = GetWindowThreadProcessId(window, &actualPid);
-    if (!thread || actualPid != targetPid || operation > LoadDll) return ERROR_INVALID_PARAMETER;
+    if (!thread || actualPid != targetPid || operation > VerifyCode) return ERROR_INVALID_PARAMETER;
+    if (operation == VerifyCode && (!password || !password[0] || wcsnlen_s(password, 8) >= 8))
+        return ERROR_INVALID_PARAMETER;
     if (operation == LoadDll && (!password || !password[0] || wcsnlen_s(password, 4096) >= 4096))
         return ERROR_INVALID_PARAMETER;
     const size_t maximum = operation == EpicLogin ? 8192 : operation == SteamLogin ? 600 : 256;
@@ -605,12 +644,13 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
     auto p = view.value;
     *p = {};
     p->magic = Magic;
-    p->version = 10;
+    p->version = 11;
     p->targetPid = targetPid;
     p->layout = *layout;
     p->nonce = nonce;
     p->operation = operation;
     if (operation == LoadDll) wcscpy_s(p->dllPath, password);
+    if (operation == VerifyCode) wcscpy_s(p->password, password);
     if (operation == Login || operation == SteamLogin || operation == EpicLogin) {
         wcscpy_s(p->email, email);
         wcscpy_s(p->password, password);
