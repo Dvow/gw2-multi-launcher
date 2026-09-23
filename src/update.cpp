@@ -65,10 +65,11 @@ AppUpdate parseAppRelease(std::string_view body, std::string_view current) {
     return result;
 }
 AppUpdate checkAppUpdate(std::stop_token stop) {
-    auto reply =
-        https("api.github.com", "/repos/Dvow/gw2-multi-launcher/releases/latest", {}, {}, stop, 131072);
-    if (reply.status == 404) return {UpdateStage::current, {}, {}, {}, {}, 0};
-    if (reply.status != 200) throw std::runtime_error("Could not check GitHub for updates. Try again later.");
+    auto reply = https(
+        "github.com", "/Dvow/gw2-multi-launcher/releases/latest/download/update.json", {}, {}, stop, 16384);
+    if (reply.status != 200)
+        throw std::runtime_error(
+            "GitHub update check failed (HTTP " + std::to_string(reply.status) + "). Try again later.");
     try {
         return parseAppRelease(reply.body.text());
     } catch (const nlohmann::json::exception &) {
