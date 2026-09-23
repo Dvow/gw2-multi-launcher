@@ -178,8 +178,8 @@ else()
   set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsecret-1-0, libgl1, libx11-6, libxcursor1, libxrandr2, libxi6, libxfixes3, libxss1, libxtst6, xwayland, pkexec")
   set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "gnome-keyring")
   set(CPACK_STRIP_FILES ON)
-  include(CPack)
   set(setup_file "${CMAKE_BINARY_DIR}/${CPACK_PACKAGE_FILE_NAME}.deb")
+  include(CPack)
   add_custom_command(OUTPUT "${setup_file}"
     COMMAND "${CMAKE_CPACK_COMMAND}" --config "${CMAKE_BINARY_DIR}/CPackConfig.cmake" -C "${CMAKE_BUILD_TYPE}"
     DEPENDS ${setup_dependencies} "${CMAKE_BINARY_DIR}/CPackConfig.cmake" "${CMAKE_BINARY_DIR}/cmake_install.cmake"
