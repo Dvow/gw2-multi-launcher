@@ -10,15 +10,13 @@ Launch one account, or all of them. Each account opens in its own window. Closin
 
 Add an account with ArenaNet, Steam, or Epic. You sign in once, then just launch.
 
-Drag an account's header to reorder it. The entire card follows your mouse while
-the other accounts make room. Release to save the order, or press Escape to cancel.
+Drag an account's header to reorder it. Release to save the order, or press Escape
+to cancel.
 
-If GW2 asks for a verification code, the waiting account expands and scrolls into
-view. Email prompts show the saved ArenaNet email address so you know which inbox
-to check. Enter the emailed, SMS, or authenticator code and press Enter or the check
-button to continue. Verification automatically enables GW2's Remember network
-option. The launcher requests focus and flashes its taskbar button
-when attention is needed.
+If GW2 asks for a verification code, the waiting account expands into view. Enter
+the code from your email, SMS, or authenticator app, then press Enter or click the
+checkmark. Email prompts show which inbox to check. Verification automatically
+enables GW2's **Remember network** option.
 
 <p align="center">
   <img src="arenanet.png" width="220" alt="Add an ArenaNet account">
@@ -26,12 +24,15 @@ when attention is needed.
   <img src="epic.png" width="220" alt="Sign in to Epic">
 </p>
 
-In Settings, choose your `Gw2-64.exe`. The game updates before your accounts open. If it needs to download, close Guild Wars 2 first.
+In Settings, select your installed `Gw2-64.exe`. When you launch an account, the
+launcher checks for GW2 updates. If no GW2 clients are running, it installs any
+required update automatically, then launches your account. If an update is needed
+while GW2 is running, close all GW2 windows and launch again.
 
-Use the **DLLs** folder button in Settings or an account's editor to choose DLLs
-to load at startup. Global DLLs load first, then account DLLs; duplicate files load
-once. Click a tag to replace its file or its cross to remove it. The row stays on
-one line. Changes apply on the next launch.
+To load DLLs at startup, use the **DLLs** folder button in Settings or an account's
+editor. DLLs selected in Settings load first, followed by that account's DLLs;
+duplicate files load once. Click a file's tag to replace it or its cross to remove
+it. Changes apply on the next launch.
 
 <p align="center">
   <img src="settings.png" width="280" alt="Settings">
@@ -40,7 +41,7 @@ one line. Changes apply on the next launch.
 ## Install
 
 - **Windows 10/11:** download the setup from [Releases](https://github.com/Dvow/gw2-multi-launcher/releases).
-- **Ubuntu 26.04:** install the `.deb` from that page with `sudo apt install ./gw2-multi-launcher_*_amd64.deb`. Use Wine or Proton, then select it in Settings.
+- **Ubuntu 26.04:** install the `.deb` from that page with `sudo apt install ./gw2-multi-launcher_*_amd64.deb`. Configure Wine or Proton under **Wine / Proton** in Settings.
 
 Not an official ArenaNet app. Two-factor still works like a normal login.
 
