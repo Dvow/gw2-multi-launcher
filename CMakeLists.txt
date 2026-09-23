@@ -52,7 +52,7 @@ configure_file(src/icons/gw2-multi-launcher.bmp
 
 add_library(game STATIC)
 target_sources(game PUBLIC FILE_SET CXX_MODULES FILES src/game.cppm)
-add_executable(gw2-multi-launcher WIN32 src/main.cpp src/accounts.cpp src/epic.cpp)
+add_executable(gw2-multi-launcher WIN32 src/main.cpp src/accounts.cpp src/epic.cpp src/update.cpp)
 set_target_properties(gw2-multi-launcher PROPERTIES OUTPUT_NAME GW2MultiLauncher)
 target_sources(gw2-multi-launcher PRIVATE FILE_SET CXX_MODULES FILES
   src/platform.cppm src/accounts.cppm src/epic.cppm src/session.cppm src/update.cppm src/app.cppm src/ui.cppm)
