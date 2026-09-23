@@ -106,7 +106,7 @@ jobs:
               test "$newest" = "$version" && test "${latest#v}" != "$version"
             fi
             gh release create "$tag" --draft --target "$GITHUB_SHA" \
-              --title "GW2 Multi Launcher $tag" --generate-notes
+              --title "GW2 Multi $tag" --generate-notes
           fi
           gh release upload "$tag" "build/release/gw2-multi-launcher_${version}_win-x64_setup.exe" \
             "build/release/gw2-multi-launcher_${version}_amd64.deb" --clobber
@@ -115,4 +115,4 @@ jobs:
             --jq '{tag_name, draft: false, prerelease, assets: [.assets[] | {name, state, size, digest, browser_download_url}]}' \
             > build/release/update.json
           gh release upload "$tag" build/release/update.json --clobber
-          gh release edit "$tag" --target "$GITHUB_SHA" --draft=false --latest
+          gh release edit "$tag" --title "GW2 Multi $tag" --target "$GITHUB_SHA" --draft=false --latest
