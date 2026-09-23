@@ -78,7 +78,7 @@ class Image {
             if (p[i] >= 0 && bytes_[offset + i] != p[i]) return false;
         return true;
     }
-    std::uint32_t find(std::string_view text) const {
+    template <class Accept> std::uint32_t find(std::string_view text, Accept accept) const {
         const auto p = pattern(text);
         std::uint32_t found{};
         for (const auto &s : sections_) {
@@ -93,7 +93,7 @@ class Image {
                 std::size_t j = 1;
                 for (; j < p.size(); ++j)
                     if (p[j] >= 0 && candidate[j] != p[j]) break;
-                if (j == p.size()) {
+                if (j == p.size() && accept(s.rva + static_cast<std::uint32_t>(candidate - begin))) {
                     if (found) invalid();
                     found = s.rva + static_cast<std::uint32_t>(candidate - begin);
                 }
@@ -102,6 +102,9 @@ class Image {
         }
         if (!found) invalid();
         return found;
+    }
+    std::uint32_t find(std::string_view text) const {
+        return find(text, [](std::uint32_t) { return true; });
     }
     std::uint32_t relative(std::uint32_t instruction, unsigned operand, unsigned length) const {
         auto value = static_cast<std::int64_t>(instruction) + length +
@@ -294,12 +297,31 @@ class Image {
         return number;
     }
     std::array<std::string, 3> epicClient() const {
-        const auto setup = find("48 8B 05 ? ? ? ? 48 89 45 50 48 8B 05 ? ? ? ? 48 89 45 58 "
-                                "48 8B 05 ? ? ? ? 48 89 45 60 48 8B 05 ? ? ? ? 48 89 45 68 "
-                                "48 8B 05 ? ? ? ? 48 89 85 90 00 00 00");
+        // EOS option fields keep their relative positions when unrelated locals
+        // move the stack frame. Validate that relationship and one unique data
+        // group; never choose the first match or guess credentials from strings.
+        const auto setup = find(
+            "48 8B 05 ? ? ? ? 48 89 45 ? 48 8B 05 ? ? ? ? 48 89 45 ? "
+            "48 8B 05 ? ? ? ? 48 89 ? ?",
+            [&](std::uint32_t candidate) {
+                const auto first = read<std::int8_t>(raw(candidate + 10));
+                if (read<std::int8_t>(raw(candidate + 21)) != first + 8) return false;
+                const auto mode = read<unsigned char>(raw(candidate + 31));
+                std::int32_t deployment{};
+                if (mode == 0x45)
+                    deployment = read<std::int8_t>(raw(candidate + 32));
+                else if (mode == 0x85)
+                    deployment = read<std::int32_t>(raw(candidate + 32, 4));
+                else
+                    return false;
+                if (deployment != first + 0x30) return false;
+                const auto fields = static_cast<std::uint64_t>(relative(candidate, 3, 7));
+                return relative(candidate + 11, 3, 7) == fields + 8 &&
+                    relative(candidate + 22, 3, 7) == fields + 16;
+            });
         std::array<std::string, 3> values;
         for (unsigned i = 0; i < values.size(); ++i) {
-            const auto address = pointer(relative(setup + 22 + i * 11, 3, 7));
+            const auto address = pointer(relative(setup + i * 11, 3, 7));
             for (unsigned j = 0; j < 256; ++j) {
                 const auto c = read<unsigned char>(raw(address + j));
                 if (!c) break;
@@ -320,11 +342,9 @@ class Image {
         resolveNotifications(result);
         if (provider) resolveToken(result);
         if (provider == 2) {
-            const auto login =
-                find("E8 ? ? ? ? 48 8B C8 E8 ? ? ? ? E8 ? ? ? ? 44 39 25 ? ? ? ? "
-                     "41 B9 03 00 00 00 48 0F 47 3D ? ? ? ? 45 33 C0 48 8B 08 48 8B D7 4C 8B 51 10");
-            const auto setter = relative(login + 8, 1, 5);
-            require(matches(setter, "48 8B D1 45 33 C9 48 8D 0D ? ? ? ? 41 B8 FF FF FF FF E9"));
+            // The browser caller changes independently of this token setter.
+            // Resolve the setter itself, then prove it writes OpenIdQuery's data.
+            const auto setter = find("48 8B D1 45 33 C9 48 8D 0D ? ? ? ? 41 B8 FF FF FF FF E9");
             const auto query =
                 find("8B 05 ? ? ? ? 85 C0 74 2A 4C 8B 05 ? ? ? ? 83 F8 01 75 06 "
                      "41 80 38 00 74 18 4D 8B CF 4C 89 7C 24 20 48 8D 15 ? ? ? ? 48 8D 4D 90 E8");
