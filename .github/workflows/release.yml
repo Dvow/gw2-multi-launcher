@@ -110,8 +110,9 @@ jobs:
           fi
           gh release upload "$tag" "build/release/gw2-multi-launcher_${version}_win-x64_setup.exe" \
             "build/release/gw2-multi-launcher_${version}_amd64.deb" --clobber
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+          release_api=$(gh release view "$tag" --json apiUrl --jq '.apiUrl')
+          gh api "$release_api" \
             --jq '{tag_name, draft: false, prerelease, assets: [.assets[] | {name, state, size, digest, browser_download_url}]}' \
             > build/release/update.json
           gh release upload "$tag" build/release/update.json --clobber
-          gh release edit "$tag" --draft=false --latest
+          gh release edit "$tag" --target "$GITHUB_SHA" --draft=false --latest
