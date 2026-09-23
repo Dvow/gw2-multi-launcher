@@ -91,11 +91,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          publish_metadata() {
+            release_api=$(gh release view "$tag" --json apiUrl --jq '.apiUrl')
+            gh api "$release_api" \
+              --jq '.tag_name as $tag | {tag_name, draft: false, prerelease, assets: [.assets[] | select(.name != "update.json") | {name, state, size, digest, browser_download_url: (.browser_download_url | sub("/download/[^/]+/"; "/download/" + $tag + "/"))}]}' \
+              > build/release/update.json
+            gh release upload "$tag" build/release/update.json --clobber
+          }
           version=$(sed -nE 's/^project\(GW2MultiLauncher VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p' CMakeLists.txt)
           test -n "$version"
           tag="v$version"
           if gh release view "$tag" --json isDraft --jq '.isDraft' > build/draft; then
             if [ "$(cat build/draft)" = false ]; then
+              publish_metadata
               echo "$tag is already published; bump the CMake project version for a new release."
               exit 0
             fi
@@ -110,9 +118,5 @@ jobs:
           fi
           gh release upload "$tag" "build/release/gw2-multi-launcher_${version}_win-x64_setup.exe" \
             "build/release/gw2-multi-launcher_${version}_amd64.deb" --clobber
-          release_api=$(gh release view "$tag" --json apiUrl --jq '.apiUrl')
-          gh api "$release_api" \
-            --jq '{tag_name, draft: false, prerelease, assets: [.assets[] | {name, state, size, digest, browser_download_url}]}' \
-            > build/release/update.json
-          gh release upload "$tag" build/release/update.json --clobber
+          publish_metadata
           gh release edit "$tag" --title "GW2 Multi $tag" --target "$GITHUB_SHA" --draft=false --latest
