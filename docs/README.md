@@ -18,6 +18,11 @@ Add an account with ArenaNet, Steam, or Epic. You sign in once, then just launch
 
 In Settings, choose your `Gw2-64.exe`. The game updates before your accounts open. If it needs to download, close Guild Wars 2 first.
 
+Use the **DLLs** folder button in Settings or an account's editor to choose DLLs
+to load at startup. Global DLLs load first, then account DLLs; duplicate files load
+once. Click a tag to replace its file or its cross to remove it. The row stays on
+one line. Changes apply on the next launch.
+
 <p align="center">
   <img src="settings.png" width="280" alt="Settings">
 </p>

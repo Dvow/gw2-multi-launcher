@@ -22,6 +22,7 @@ struct Account {
     std::string id, label, protectedCredentials, arguments;
     Provider provider{};
     std::string identity{}, username{};
+    std::vector<std::string> dlls{};
 };
 struct WindowState {
     int width{360}, height{480}, x{}, y{};
@@ -34,6 +35,7 @@ struct Catalog {
     bool hideLogin{true}, showPid{}, updatePending{}, autoUpdate{true};
     WindowState window;
     std::vector<Account> accounts;
+    std::vector<std::string> dlls;
 };
 inline std::string trim(std::string value) {
     const auto first = value.find_first_not_of(" \t\r\n"), last = value.find_last_not_of(" \t\r\n");
@@ -43,6 +45,31 @@ inline std::string lower(std::string text) {
     for (auto &c : text)
         if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
     return text;
+}
+inline void validateDlls(const std::vector<std::string> &dlls) {
+    if (dlls.size() > 16) throw std::runtime_error("Choose at most 16 DLLs.");
+    for (const auto &dll : dlls)
+        if (dll.empty() || dll.size() >= 4096 || dll.find('\0') != dll.npos ||
+            !path(dll).is_absolute() || lower(utf8(path(dll).extension())) != ".dll")
+            throw std::runtime_error("Choose DLL files using full paths shorter than 4096 bytes.");
+}
+inline std::vector<std::string> launchDlls(const Account &account, const Catalog &catalog) {
+    std::vector<std::string> result;
+    for (const auto *list : {&catalog.dlls, &account.dlls}) {
+        validateDlls(*list);
+        for (const auto &dll : *list) {
+            std::error_code error;
+            const auto file = std::filesystem::canonical(path(dll), error);
+            if (error || !std::filesystem::is_regular_file(file, error))
+                throw std::runtime_error("DLL is missing or unreadable: " + dll);
+            if (std::ranges::none_of(result, [&](const auto &existing) {
+                    return std::filesystem::equivalent(path(existing), file, error);
+                }))
+                result.push_back(utf8(file));
+        }
+    }
+    validateDlls(result);
+    return result;
 }
 struct Option {
     std::string name;
@@ -227,6 +254,7 @@ class Store {
             c.proton.size() > 32760 || c.runner.size() > 32760)
             throw std::runtime_error("The account catalog is invalid.");
         (void)options(c.arguments);
+        validateDlls(c.dlls);
         std::set<std::string> ids;
         std::set<std::pair<Provider, std::string>> identities;
         for (const auto &a : c.accounts) {
@@ -251,6 +279,7 @@ class Store {
             if (a.provider != Provider::arenaNet && !identities.emplace(a.provider, a.identity).second)
                 throw std::runtime_error("This platform account is already saved.");
             (void)options(a.arguments);
+            validateDlls(a.dlls);
         }
     }
     Secret accountRecord(Account &updated, std::string_view id, std::string_view email, Secret replacement,
@@ -320,8 +349,9 @@ class Store {
 #endif
         save(std::move(next));
     }
-    void put(std::string id, std::string label, std::string email, std::string args, Secret replacement,
-        std::stop_token stop, Provider provider = Provider::arenaNet, Secret session = Secret{}) {
+    void put(std::string id, std::string label, std::string email, std::string args,
+        std::vector<std::string> dlls, Secret replacement, std::stop_token stop,
+        Provider provider = Provider::arenaNet, Secret session = Secret{}) {
         if (!id.empty()) (void)account(id);
         label = trim(label);
         email = trim(email);
@@ -335,6 +365,8 @@ class Store {
         if (id.empty() && catalog_.accounts.size() >= 100)
             throw std::runtime_error("The account limit is 100.");
         Account updated{id.empty() ? identifier() : id, std::move(label), {}, std::move(args), provider};
+        updated.dlls = std::move(dlls);
+        validateDlls(updated.dlls);
         auto record = accountRecord(updated, id, email, std::move(replacement), std::move(session), stop);
         auto encrypted = crypt(record.bytes, true, catalog_.accounts.empty(), stop);
         updated.protectedCredentials = base64(encrypted.bytes);

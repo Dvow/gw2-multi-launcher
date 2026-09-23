@@ -14,7 +14,7 @@ extern "C" __declspec(dllimport) DWORD __cdecl KxExecute(
     HWND, DWORD, DWORD, const wchar_t *, const wchar_t *, DWORD *, DWORD *, DWORD *, const gw2::Layout *);
 
 namespace {
-constexpr DWORD Magic = 0x34585747; // Protocol 4: launch settings, then framed credential/control messages.
+constexpr DWORD Magic = 0x35585747; // Protocol 5: launch settings/DLLs, then credential/control messages.
 struct Failure {
     DWORD code;
 };
@@ -305,6 +305,7 @@ struct Launch {
     HANDLE process;
     DWORD operation;
     Secrets secret;
+    std::vector<std::wstring> dlls;
     Phase phase{starting};
     DWORD flags{};
     ULONGLONG deadline{GetTickCount64() + 90000};
@@ -386,8 +387,31 @@ struct Launch {
             // Loading GW2 and fetching a platform token overlap. Only validated
             // credentials from the pipe reader may cross into native sign-in.
             if (phase == starting && secret.bytes.empty()) secret = TakeCredentials();
-            if (phase == starting && !secret.bytes.empty() && client.login && Native(client, 0, flags) == 1)
-                signIn();
+            if (phase == starting && client.login && Native(client, 0, flags) == 1) {
+                for (std::size_t i = 0; i < dlls.size(); ++i) {
+                    if (!Control(client)) {
+                        Reveal(client);
+                        return;
+                    }
+                    Report(11, static_cast<DWORD>(i + 1));
+                    try {
+                        if (Native(client, 8, flags, nullptr, dlls[i].c_str()) != 1)
+                            throw Failure{ERROR_DLL_INIT_FAILED};
+                    } catch (const Failure &failure) {
+                        // Preserve the launch-list index and loader error in one
+                        // existing status record. Never retry an uncertain load.
+                        throw Failure{0x40000000u | (static_cast<DWORD>(i + 1) << 16) |
+                            (failure.code > 0xFFFF ? 0xFFFF : failure.code)};
+                    }
+                }
+                if (!dlls.empty()) deadline = GetTickCount64() + 90000;
+                dlls.clear();
+                if (!Control(client)) {
+                    Reveal(client);
+                    return;
+                }
+                if (!secret.bytes.empty()) signIn();
+            }
             if (phase == registration) setup();
             if (phase == signingIn) signedIn();
             observe();
@@ -440,6 +464,16 @@ int main(int argc, char **argv) {
             command += L" " + Quote(String());
         if (command.size() > 32760) throw Failure{1000};
         client.hide = Number() != 0;
+        const auto dllCount = Number();
+        if (dllCount > 16) throw Failure{1000};
+        std::vector<std::wstring> dlls;
+        for (DWORD i = 0; i < dllCount; ++i) {
+            auto dll = DosPath(String());
+            if (dll.empty() || dll.size() >= 4096 || !std::filesystem::path(dll).is_absolute() ||
+                _wcsicmp(std::filesystem::path(dll).extension().c_str(), L".dll"))
+                throw Failure{1000};
+            dlls.push_back(std::move(dll));
+        }
         Handle existing{OpenMutexW(SYNCHRONIZE, FALSE, L"AN-Mutex-Window-Guild Wars 2")};
         if (existing.value) throw Failure{1002};
         if (GetLastError() != ERROR_FILE_NOT_FOUND) throw Failure{GetLastError()};
@@ -457,7 +491,7 @@ int main(int argc, char **argv) {
         CloseHandle(info.hThread);
         client.pid = info.dwProcessId;
         Report(1, client.pid); // Starting: detail identifies the game, not this helper.
-        Launch{client, process.value, operation, {}}.run();
+        Launch{client, process.value, operation, {}, std::move(dlls)}.run();
     } catch (const Failure &failure) {
         client.hide = false;
         Reveal(client);

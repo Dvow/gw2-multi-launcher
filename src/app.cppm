@@ -50,6 +50,7 @@ struct Command {
     std::uint64_t serial{};
     std::string id{}, label{}, email{}, arguments{};
     std::vector<std::string> ids{};
+    std::vector<std::string> dlls{};
     Secret password{};
     Provider provider{};
     Catalog settings{};
@@ -59,7 +60,9 @@ struct SessionView {
     unsigned state{}, pid{};
     bool active{}, canShow{};
     bool canClose() const { return active && state == 4 && !id.empty(); }
-    bool blocking() const { return active && (id.empty() || state < 4 || state == 9 || state == 10); }
+    bool blocking() const {
+        return active && (id.empty() || state < 4 || state == 9 || state == 10 || state == 11);
+    }
 };
 struct Snapshot {
     struct Authentication {
@@ -81,7 +84,7 @@ struct Snapshot {
 };
 
 class App {
-    static constexpr std::uint32_t magic = 0x34585747;
+    static constexpr std::uint32_t magic = 0x35585747;
     struct Session {
         SessionView view;
         std::unique_ptr<Process> process;
@@ -142,6 +145,10 @@ class App {
             sessions_, [&](const Session &s) { return s.view.id == id && s.view.active; });
     }
     static std::string failure(std::uint32_t code) {
+        if ((code & 0xFF000000u) == 0x40000000u)
+            return "DLL " + std::to_string((code >> 16) & 0xFF) +
+                " could not load (Windows error " + std::to_string(code & 0xFFFF) +
+                "). Check the file, its 64-bit dependencies, and initialization. Close this client before retrying.";
         switch (code) {
         case 1001:
             return "Wine could not resolve the game path.";
@@ -189,7 +196,8 @@ class App {
         // Refresh tokens rotate. Commit the replacement before launching the game,
         // so cancellation or a launch failure cannot discard the saved session.
         store_->put(
-            id, account.label, {}, account.arguments, Secret{}, {}, Provider::epic, std::move(login.record));
+            id, account.label, {}, account.arguments, account.dlls, Secret{}, {}, Provider::epic,
+            std::move(login.record));
         cancelled(stop);
         Secret request;
         tokenCredentials(request.bytes, name, login.access.text());
@@ -202,13 +210,14 @@ class App {
         if (!update && store_->account(id).provider == Provider::epic)
             epicRequest = epicCredentials(id, "1", stop);
         const auto &catalog = store_->catalog();
+        const auto dlls = update ? std::vector<std::string>{} : launchDlls(store_->account(id), catalog);
         Session session;
         session.view = {.id = id, .status = update ? "Starting updater…" : "Starting…", .active = true};
         auto &bytes = session.outgoing.bytes;
         const auto steam = !update && store_->account(id).provider == Provider::steam;
         if (steam) {
             const auto &account = store_->account(id);
-            session.outgoing = steamRequest(catalog, account, openAccount(account, stop));
+            session.outgoing = steamRequest(catalog, account, openAccount(account, stop), dlls);
 #ifdef _WIN32
             constexpr auto executable = "GW2MultiLauncher.exe";
 #else
@@ -224,7 +233,7 @@ class App {
                 wireString(bytes, catalog.gamePath);
             } else {
                 const auto &account = store_->account(id);
-                gameRequest(bytes, catalog, account);
+                gameRequest(bytes, catalog, account, dlls);
                 auto secret =
                     account.provider == Provider::epic ? std::move(epicRequest) : openAccount(account, stop);
                 // Reserve before copying the password, so vector growth cannot leave
@@ -236,7 +245,7 @@ class App {
                 bytes.insert(bytes.end(), secret.bytes.begin(), secret.bytes.end());
             }
             cancelled(stop);
-            session.process = gameRunner(catalog);
+            session.process = gameRunner(catalog, dllDirectories(dlls));
         }
         session.deadline = SDL_GetTicks() + 90000;
         std::erase_if(sessions_,
@@ -259,8 +268,8 @@ class App {
             command.label = state_.auth.username;
         const auto id = command.id;
         store_->put(std::move(command.id), std::move(command.label), std::move(command.email),
-            std::move(command.arguments), std::move(command.password), stop, command.provider,
-            std::move(candidate));
+            std::move(command.arguments), std::move(command.dlls), std::move(command.password), stop,
+            command.provider, std::move(candidate));
         clearAuthentication();
         if (id.empty()) return;
         const auto &account = store_->account(id);
@@ -514,8 +523,8 @@ class App {
             throw std::runtime_error(
                 "The Wine/Proton runner changed the helper protocol. Use wine or umu-run directly.");
         const auto state = number(session.record, 4), detail = number(session.record, 8);
-        if (state < 1 || state > 10 ||
-            (session.view.id.empty() ? state < 5 || state > 8 : state > 6 && state != 9 && state != 10))
+        if (state < 1 || state > 11 || (session.view.id.empty() ? state < 5 || state > 8
+                                        : state > 6 && state != 9 && state != 10 && state != 11))
             throw std::runtime_error("Unexpected game helper status.");
         if (state == 1) session.view.pid = detail;
         if (state == 5 || state == 8) session.view.pid = 0;
@@ -528,10 +537,11 @@ class App {
         } else if (!session.failed) {
             constexpr const char *statuses[]{"", "Starting…", "Signing in…", "Opening game…", "Running",
                 "Client exited", "", "Updating GW2…", "Updated", "Choose a GW2 display name",
-                "Review GW2's agreement"};
+                "Review GW2's agreement", "Loading DLLs…"};
             session.view.status = statuses[state];
+            if (state == 11) session.view.status = "Loading DLL " + std::to_string(detail) + "…";
         }
-        if (state == 1 || state == 2 || state == 3 || state == 4 || state == 7 || state == 10)
+        if (state == 1 || state == 2 || state == 3 || state == 4 || state == 7 || state == 10 || state == 11)
             session.view.canShow = true;
         if (state == 9) session.view.canShow = false;
         session.deadline = SDL_GetTicks() + (state == 2 ? 130000 : 100000);
@@ -566,7 +576,8 @@ class App {
                 receiveStatus(session);
                 changed = true;
             }
-            if (session.view.active && session.view.state < 4 && SDL_GetTicks() > session.deadline)
+            if (session.view.active && (session.view.state < 4 || session.view.state == 11) &&
+                SDL_GetTicks() > session.deadline)
                 throw std::runtime_error("The game helper timed out before opening the game. Check your "
                                          "runner and the GW2 window.");
             cancelled(stop);

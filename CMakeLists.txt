@@ -47,8 +47,8 @@ set_property(TARGET imgui PROPERTY CXX_SCAN_FOR_MODULES OFF)
 file(READ "${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf" font HEX)
 string(REGEX REPLACE "(..)" "0x\\1," font "${font}")
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/font.hpp" CONTENT "inline constexpr unsigned char launcherFont[] = {${font}};\n")
-configure_file(src/icons/gw2-multi-launcher.bmp
-  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/gw2-multi-launcher.bmp" COPYONLY)
+configure_file(src/icons/gw2-multi-launcher.png
+  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/gw2-multi-launcher.png" COPYONLY)
 
 add_library(game STATIC)
 target_sources(game PUBLIC FILE_SET CXX_MODULES FILES src/game.cppm)
@@ -89,8 +89,40 @@ endif()
 
 if(WIN32)
   enable_language(RC)
-  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/icon.rc" CONTENT "1 ICON \"${CMAKE_SOURCE_DIR}/src/icons/gw2-multi-launcher.ico\"\n")
-  target_sources(gw2-multi-launcher PRIVATE "${CMAKE_BINARY_DIR}/icon.rc")
+  # Keep one source image; Windows resources and Inno Setup require an ICO wrapper.
+  find_program(POWERSHELL_EXECUTABLE powershell REQUIRED)
+  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/icon.ps1" CONTENT [=[
+param([string]$Source, [string]$Destination)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+$image = [Drawing.Image]::FromFile($Source)
+$bitmap = [Drawing.Bitmap]::new(256, 256)
+$graphics = [Drawing.Graphics]::FromImage($bitmap)
+$data = [IO.MemoryStream]::new()
+try {
+    $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $graphics.DrawImage($image, 0, 0, 256, 256)
+    $bitmap.Save($data, [Drawing.Imaging.ImageFormat]::Png)
+    # One 256px, 32-bit PNG entry. Zero width/height bytes encode 256 in ICO.
+    $header = [byte[]](0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 32, 0) +
+        [BitConverter]::GetBytes([uint32]$data.Length) + [BitConverter]::GetBytes([uint32]22)
+    [IO.File]::WriteAllBytes($Destination, [byte[]]($header + $data.ToArray()))
+} finally {
+    $data.Dispose()
+    $graphics.Dispose()
+    $bitmap.Dispose()
+    $image.Dispose()
+}
+]=])
+  add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/icon.ico"
+    COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+      -File "${CMAKE_BINARY_DIR}/icon.ps1"
+      "${CMAKE_SOURCE_DIR}/src/icons/gw2-multi-launcher.png" "${CMAKE_BINARY_DIR}/icon.ico"
+    DEPENDS src/icons/gw2-multi-launcher.png "${CMAKE_BINARY_DIR}/icon.ps1" VERBATIM)
+  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/icon.rc" CONTENT "1 ICON \"${CMAKE_BINARY_DIR}/icon.ico\"\n")
+  set_source_files_properties("${CMAKE_BINARY_DIR}/icon.rc" PROPERTIES OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/icon.ico")
+  target_sources(gw2-multi-launcher PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
   if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Use MSVC x64 for the Windows native bridge.")
   endif()
@@ -125,4 +157,4 @@ else()
   endforeach()
 endif()
 
-include(cmake/Package.cmake)
+include(Package.cmake)

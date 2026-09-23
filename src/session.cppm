@@ -33,7 +33,21 @@ inline std::filesystem::path installed(std::string_view name) {
     if (!base) throw std::runtime_error("Cannot find the launcher installation.");
     return path(base) / path(name);
 }
-inline std::unique_ptr<Process> gameRunner(const Catalog &c) {
+inline std::string dllDirectories(const std::vector<std::string> &dlls) {
+    std::string result;
+#ifndef _WIN32
+    for (const auto &dll : dlls) {
+        const auto directory = utf8(path(dll).parent_path());
+        if (directory.find(':') != directory.npos)
+            throw std::runtime_error("DLL directories cannot contain ':' when using Wine / Proton.");
+        result += ":" + directory;
+    }
+#else
+    (void)dlls;
+#endif
+    return result;
+}
+inline std::unique_ptr<Process> gameRunner(const Catalog &c, const std::string &libraryDirectories) {
     const auto helper = installed("GW2MultiLauncher.Host.exe");
     if (!std::filesystem::exists(helper) ||
         !std::filesystem::exists(installed("GW2MultiLauncher.Native.dll")))
@@ -54,7 +68,7 @@ inline std::unique_ptr<Process> gameRunner(const Catalog &c) {
                 break;
             }
         auto libraries = utf8(helper.parent_path()) + ":" + utf8(path(c.gamePath).parent_path()) + ":" +
-            c.prefix + ":" + utf8(dataRoot());
+            c.prefix + ":" + utf8(dataRoot()) + libraryDirectories;
         if (auto existing = SDL_getenv("STEAM_COMPAT_LIBRARY_PATHS"); existing && *existing)
             libraries += ":" + std::string(existing);
         env.insert(env.end(),
@@ -64,6 +78,7 @@ inline std::unique_ptr<Process> gameRunner(const Catalog &c) {
     return std::make_unique<Process>(args, env, true);
 #else
     (void)c;
+    (void)libraryDirectories;
     return std::make_unique<Process>(args, env);
 #endif
 }
@@ -117,8 +132,9 @@ class SteamConnection {
     }
 };
 
-inline void gameRequest(Bytes &out, const Catalog &catalog, const Account &account) {
-    appendNumber(out, 0x34585747);
+inline void gameRequest(Bytes &out, const Catalog &catalog, const Account &account,
+    const std::vector<std::string> &dlls) {
+    appendNumber(out, 0x35585747);
     appendNumber(out,
         account.provider == Provider::epic        ? 3u
             : account.provider == Provider::steam ? 2u
@@ -129,6 +145,9 @@ inline void gameRequest(Bytes &out, const Catalog &catalog, const Account &accou
     for (const auto &arg : args)
         wireString(out, arg);
     appendNumber(out, catalog.hideLogin ? 1u : 0u);
+    appendNumber(out, static_cast<unsigned>(dlls.size()));
+    for (const auto &dll : dlls)
+        wireString(out, dll);
 }
 inline void tokenCredentials(Bytes &out, std::string_view displayName, std::string_view token) {
     auto name = utf16(displayName), value = utf16(token);
@@ -139,16 +158,18 @@ inline void tokenCredentials(Bytes &out, std::string_view displayName, std::stri
     out.insert(out.end(), name.bytes.begin(), name.bytes.end());
     out.insert(out.end(), value.bytes.begin(), value.bytes.end());
 }
-inline Secret steamRequest(const Catalog &catalog, const Account &account, Secret credentials) {
+inline Secret steamRequest(const Catalog &catalog, const Account &account, Secret credentials,
+    const std::vector<std::string> &dlls) {
     Secret request;
     auto &out = request.bytes;
     out.reserve(262144);
     appendNumber(out, 0); // Total length, set after construction.
     for (const auto *value : {&catalog.runner, &catalog.prefix, &catalog.proton, &catalog.gamePath})
         textField(out, *value);
+    textField(out, dllDirectories(dlls));
     appendNumber(out, static_cast<unsigned>(credentials.bytes.size()));
     out.insert(out.end(), credentials.bytes.begin(), credentials.bytes.end());
-    gameRequest(out, catalog, account);
+    gameRequest(out, catalog, account, dlls);
     const auto size = static_cast<unsigned>(out.size() - 4);
     if (size > 262144) throw std::runtime_error("The launch request is too large.");
     for (unsigned i = 0; i < 4; ++i)
@@ -186,7 +207,7 @@ inline void report(std::span<const unsigned char> bytes) {
         connected = false;
 }
 inline void report(unsigned state, unsigned detail = 0) {
-    const std::array<unsigned, 3> record{0x34585747, state, detail};
+    const std::array<unsigned, 3> record{0x35585747, state, detail};
     report({reinterpret_cast<const unsigned char *>(record.data()), sizeof(record)});
 }
 inline void readControl() {
@@ -241,8 +262,9 @@ class SteamSession {
         catalog.prefix = fields.next();
         catalog.proton = fields.next();
         catalog.gamePath = fields.next();
-        auto offset = 16 + catalog.runner.size() + catalog.prefix.size() + catalog.proton.size() +
-            catalog.gamePath.size();
+        const std::string directories(fields.next());
+        auto offset = 20 + catalog.runner.size() + catalog.prefix.size() + catalog.proton.size() +
+            catalog.gamePath.size() + directories.size();
         const auto secretSize = number(request.bytes, offset);
         offset += 4;
         if (secretSize > size - offset) throw std::runtime_error("Invalid session request.");
@@ -253,14 +275,14 @@ class SteamSession {
         (void)identityFields.next();
         identityFields.end();
         offset += secretSize;
-        if (size - offset < 20 || number(request.bytes, offset) != 0x34585747 ||
+        if (size - offset < 20 || number(request.bytes, offset) != 0x35585747 ||
             number(request.bytes, offset + 4) != 2)
             throw std::runtime_error("Invalid session request.");
         steam = std::make_unique<SteamConnection>();
         steam->send(3, saved);
         outgoing.bytes.assign(request.bytes.begin() + offset, request.bytes.end());
         request.clear();
-        game = gameRunner(catalog);
+        game = gameRunner(catalog, directories);
         std::thread(broker::readControl).detach();
         broker::report(2);
         deadline = SDL_GetTicks() + 100000;
@@ -362,7 +384,7 @@ class SteamSession {
         received += game->read(std::span(record).subspan(received));
         if (received != record.size()) return true;
         received = 0;
-        if (number(record) != 0x34585747) throw std::runtime_error("Invalid game helper status.");
+        if (number(record) != 0x35585747) throw std::runtime_error("Invalid game helper status.");
         broker::report(record);
         if (number(record, 4) == 9 && stage != Stage::failed) {
             stage = Stage::name;

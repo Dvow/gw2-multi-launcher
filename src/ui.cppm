@@ -229,7 +229,8 @@ void release(void *memory, void *) {
 struct Picker {
     std::mutex mutex;
     bool done{};
-    std::string value, error;
+    std::vector<std::string> values;
+    std::string error;
 };
 struct Form {
     enum class Page { accounts, account, settings, exit } page{};
@@ -252,6 +253,7 @@ struct Form {
     bool steamPassword{};
     App *authApp{};
     std::array<char, 2049> args{};
+    std::vector<std::string> dlls;
     std::array<char, 32761> game{}, runner{}, prefix{}, proton{};
     bool hide{}, showPid{}, autoUpdate{true}, removing{}, loading{}, edited{}, connected{};
     std::uint64_t pending{};
@@ -299,6 +301,7 @@ struct Form {
         navigate(Page::settings);
         assign(game, c.gamePath);
         assign(args, c.arguments);
+        dlls = c.dlls;
         assign(runner, c.runner);
         assign(prefix, c.prefix);
         assign(proton, c.proton);
@@ -317,6 +320,7 @@ struct Form {
         assign(label, account ? account->label : "");
         assign(email, "");
         assign(args, account ? account->arguments : "");
+        dlls = account ? account->dlls : std::vector<std::string>{};
         if (account) {
             id = account->id;
             loading = true;
@@ -376,6 +380,7 @@ struct Form {
             c.settings = catalog;
             c.settings.gamePath = game.data();
             c.settings.arguments = args.data();
+            c.settings.dlls = dlls;
             c.settings.hideLogin = hide;
             c.settings.showPid = showPid;
             c.settings.autoUpdate = autoUpdate;
@@ -388,6 +393,7 @@ struct Form {
             c.label = label.data();
             c.email = email.data();
             c.arguments = args.data();
+            c.dlls = dlls;
             c.provider = provider;
             if (password[0]) c.password = utf16(password.data());
         }
@@ -444,14 +450,18 @@ struct Form {
             auto &reply = **owner;
             std::lock_guard lock(reply.mutex);
             if (!files)
-                reply.error = "The file picker could not open. Enter the path directly.";
-            else if (files[0])
-                reply.value = files[0];
+                reply.error = "The file picker could not open. Try again.";
+            else
+                for (auto file = files; *file; ++file)
+                    reply.values.emplace_back(*file);
             reply.done = true;
         };
         if (folder)
             SDL_ShowOpenFolderDialog(callback, data, window, initial, false);
-        else
+        else if (target >= 4) {
+            static constexpr SDL_DialogFileFilter filter{"DLL files", "dll;DLL"};
+            SDL_ShowOpenFileDialog(callback, data, window, &filter, 1, initial, target == 4);
+        } else
             SDL_ShowOpenFileDialog(callback, data, window, nullptr, 0, initial, false);
     }
     void observePicker() {
@@ -460,9 +470,25 @@ struct Form {
             std::lock_guard lock(picker->mutex);
             if (!picker->done) return;
             localError = picker->error;
-            if (!picker->value.empty()) {
-                assign(pickerField == 1 ? game : pickerField == 2 ? prefix : proton, picker->value);
-                edited = true;
+            if (!picker->values.empty()) {
+                try {
+                    if (pickerField >= 4) {
+                        auto nextDlls = dlls;
+                        if (pickerField >= 5)
+                            nextDlls.at(pickerField - 5) = picker->values.front();
+                        else
+                            for (const auto &file : picker->values)
+                                if (std::ranges::find(nextDlls, file) == nextDlls.end())
+                                    nextDlls.push_back(file);
+                        validateDlls(nextDlls);
+                        dlls = std::move(nextDlls);
+                    } else
+                        assign(pickerField == 1 ? game : pickerField == 2 ? prefix : proton,
+                            picker->values.front());
+                    edited = true;
+                } catch (const std::exception &error) {
+                    localError = error.what();
+                }
             }
         }
         picker.reset();
@@ -554,6 +580,56 @@ bool rowField(const char *name, std::array<char, N> &value, float width, const c
     const bool changed = ImGui::InputTextWithHint("##value", hint, value.data(), value.size(), flags);
     ImGui::PopID();
     return changed;
+}
+void dllField(Form &form, SDL_Window *window, float width, const std::vector<std::string> &inherited) {
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    const auto height = ImGui::GetFrameHeight();
+    const auto labelWidth = std::max(68 * scale,
+        ImGui::CalcTextSize("Arguments").x + ImGui::GetStyle().ItemSpacing.x);
+    const auto origin = ImGui::GetCursorScreenPos();
+    ImGui::AlignTextToFramePadding();
+    mutedText("DLLs");
+    help("Global DLLs load first, then account DLLs. Duplicate files load once. Changes apply next launch.");
+    ImGui::SetCursorScreenPos({origin.x + labelWidth, origin.y});
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{5 * scale, scale});
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 4 * scale);
+    ImGui::BeginChild("##dlls", {std::max(1.f, width - labelWidth - 36 * scale), height},
+        ImGuiChildFlags_FrameStyle, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::SetCursorPosY((height - ImGui::GetTextLineHeight()) * 0.5f);
+    int removed = -1;
+    auto tags = [&](const std::vector<std::string> &files, bool global) {
+        ImGui::PushID(global);
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            if (i || (!global && !inherited.empty())) ImGui::SameLine();
+            const auto name = utf8(path(files[i]).filename());
+            ImGui::BeginDisabled(global);
+            if (ImGui::SmallButton(name.c_str()))
+                form.choose(window, static_cast<unsigned>(i + 5), false, files[i].c_str());
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s%s", global ? "Global: " : "Replace: ", files[i].c_str());
+            if (!global) {
+                ImGui::SameLine(0, 2 * scale);
+                if (ImGui::SmallButton("×")) removed = static_cast<int>(i);
+                help("Remove DLL");
+            }
+            ImGui::PopID();
+        }
+        ImGui::PopID();
+    };
+    tags(inherited, true);
+    tags(form.dlls, false);
+    if (inherited.empty() && form.dlls.empty()) mutedText("Add DLLs…");
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    if (removed >= 0) {
+        form.dlls.erase(form.dlls.begin() + removed);
+        form.edited = true;
+    }
+    ImGui::SameLine();
+    if (iconButton(Icon::folder, "Choose DLL files"))
+        form.choose(window, 4, false, form.dlls.empty() ? nullptr : form.dlls.back().c_str());
 }
 void qrCode(std::string_view bits, float width) {
     const int count = static_cast<int>(std::sqrt(bits.size()));
@@ -650,7 +726,8 @@ void removeAccount(Form &form) {
     ImGui::SameLine();
     if (iconButton(Icon::close, "Cancel removal")) form.removing = false;
 }
-void accountFields(const Account *account, App &app, Form &form, const Snapshot &state, float width) {
+void accountFields(const Account *account, App &app, Form &form, const Snapshot &state, float width,
+    SDL_Window *window) {
     form.edited |= rowField("Name", form.label, width, "Account name");
     const char *providers[]{"ArenaNet", "Steam", "Epic"};
     float labels{};
@@ -681,6 +758,7 @@ void accountFields(const Account *account, App &app, Form &form, const Snapshot 
     }
     form.edited |= rowField("Arguments", form.args, width, "e.g. -windowed -loadmapinfo");
     help("Global arguments apply unless overridden here.");
+    dllField(form, window, width, state.catalog.dlls);
     if (account && form.removing) {
         removeAccount(form);
         return;
@@ -694,7 +772,7 @@ void accountFields(const Account *account, App &app, Form &form, const Snapshot 
     form.removing = iconButton(Icon::remove, "Remove account");
 }
 
-void accountRow(const Account *account, App &app, Form &form, const Snapshot &state) {
+void accountRow(const Account *account, App &app, Form &form, const Snapshot &state, SDL_Window *nativeWindow) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const auto row = ImGui::GetCursorScreenPos();
     const auto width = ImGui::GetContentRegionAvail().x;
@@ -809,7 +887,7 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         if (registration)
             registrationFields(form, id, available);
         else
-            accountFields(account, app, form, state, available);
+            accountFields(account, app, form, state, available, nativeWindow);
         ImGui::EndDisabled();
         ImGui::EndGroup();
         storage->SetFloat(heightId, ImGui::GetItemRectMax().y - (row.y + header) + 10 * scale);
@@ -912,6 +990,7 @@ void pathField(Form &form, SDL_Window *window, const char *label, std::array<cha
 void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     pathField(form, window, "Game executable", form.game, 1, false, "Full path to Gw2-64.exe");
     form.edited |= field("Global arguments", form.args, "e.g. -windowed -loadmapinfo");
+    dllField(form, window, ImGui::GetContentRegionAvail().x, {});
     form.edited |= ImGui::Checkbox("Hide sign-in window", &form.hide);
     help("Hide the GW2 sign-in window unless it needs your attention.");
     form.edited |= ImGui::Checkbox("Show PID", &form.showPid);
@@ -1020,9 +1099,9 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
             mutedText("Add an ArenaNet account to get started.");
             ImGui::PopTextWrapPos();
         }
-        if (form.page == Form::Page::account && form.id.empty()) accountRow(nullptr, app, form, state);
+        if (form.page == Form::Page::account && form.id.empty()) accountRow(nullptr, app, form, state, window);
         for (const auto &account : state.catalog.accounts)
-            accountRow(&account, app, form, state);
+            accountRow(&account, app, form, state, window);
     } else {
         ImGui::BeginDisabled(busy || form.page != page);
         settingsPage(form, state, window);
@@ -1153,9 +1232,9 @@ auto createWindow() {
     if (!window) throw std::runtime_error(SDL_GetError());
     const auto base = SDL_GetBasePath();
     if (!base) throw std::runtime_error(SDL_GetError());
-    const auto iconFile = std::string(base) + "gw2-multi-launcher.bmp";
+    const auto iconFile = std::string(base) + "gw2-multi-launcher.png";
     auto icon = std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)>(
-        SDL_LoadBMP(iconFile.c_str()), SDL_DestroySurface);
+        SDL_LoadPNG(iconFile.c_str()), SDL_DestroySurface);
     if (!icon || !SDL_SetWindowIcon(window.get(), icon.get())) throw std::runtime_error(SDL_GetError());
     SDL_SetWindowPosition(window.get(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     SDL_SetWindowHitTest(window.get(), hitTest, nullptr);

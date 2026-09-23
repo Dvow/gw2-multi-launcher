@@ -22,11 +22,12 @@ void Store::save(Catalog next) {
     for (const auto &a : next.accounts)
         accounts.push_back({{"Id", a.id}, {"Label", a.label},
             {"ProtectedCredentials", a.protectedCredentials}, {"Arguments", a.arguments},
-            {"Provider", static_cast<int>(a.provider)}, {"Identity", a.identity}, {"Username", a.username}});
-    nlohmann::json json{{"Version", 2}, {"GamePath", next.gamePath}, {"Accounts", accounts},
+            {"Provider", static_cast<int>(a.provider)}, {"Identity", a.identity}, {"Username", a.username},
+            {"Dlls", a.dlls}});
+    nlohmann::json json{{"Version", 3}, {"GamePath", next.gamePath}, {"Accounts", accounts},
         {"HideLogin", next.hideLogin}, {"ShowPid", next.showPid}, {"Arguments", next.arguments},
         {"Runner", next.runner}, {"Prefix", next.prefix}, {"Proton", next.proton},
-        {"UpdatePending", next.updatePending}, {"AutoUpdate", next.autoUpdate}};
+        {"UpdatePending", next.updatePending}, {"AutoUpdate", next.autoUpdate}, {"Dlls", next.dlls}};
     json["Window"] = {{"Width", next.window.width}, {"Height", next.window.height}, {"X", next.window.x},
         {"Y", next.window.y}, {"Positioned", next.window.positioned}, {"Scale", next.window.scale}};
     atomicWrite(root_ / "accounts.json", json.dump(2));
@@ -50,10 +51,11 @@ Store::Store() {
         std::ifstream stream(file);
         const auto json = nlohmann::json::parse(stream);
         const auto version = json.at("Version").get<int>();
-        if (version < 1 || version > 2)
+        if (version < 1 || version > 3)
             throw std::runtime_error("This account catalog needs a newer launcher.");
         catalog_.gamePath = json.at("GamePath").get<std::string>();
         catalog_.arguments = json.value("Arguments", "");
+        catalog_.dlls = json.value("Dlls", std::vector<std::string>{});
         catalog_.hideLogin = json.value("HideLogin", true);
         catalog_.showPid = json.value("ShowPid", false);
         catalog_.runner = json.value("Runner", "wine");
@@ -71,7 +73,8 @@ Store::Store() {
             catalog_.accounts.push_back({lower(a.at("Id").get<std::string>()),
                 a.at("Label").get<std::string>(), a.at("ProtectedCredentials").get<std::string>(),
                 a.value("Arguments", ""), static_cast<Provider>(a.value("Provider", 0)),
-                a.value("Identity", ""), a.value("Username", "")});
+                a.value("Identity", ""), a.value("Username", ""),
+                a.value("Dlls", std::vector<std::string>{})});
         validate(catalog_);
         if (legacyLock) save(catalog_);
     } catch (const nlohmann::json::exception &) {

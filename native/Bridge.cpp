@@ -101,7 +101,7 @@ DWORD ReleaseInstanceMutex() {
 }
 
 namespace {
-constexpr wchar_t MessageName[] = L"KX.GW2MultiLauncher.Native.9";
+constexpr wchar_t MessageName[] = L"KX.GW2MultiLauncher.Native.10";
 constexpr DWORD Magic = 0x31584B47;
 
 enum Operation : DWORD {
@@ -112,7 +112,8 @@ enum Operation : DWORD {
     PlayIfAuthenticated = 4,
     SteamLogin = 5,
     ObservePlay = 6,
-    EpicLogin = 7
+    EpicLogin = 7,
+    LoadDll = 8
 };
 enum Result : DWORD {
     Pending = 0,
@@ -125,7 +126,8 @@ enum Result : DWORD {
     PlayRequested = 7,
     NameRequired = 8,
     AuthenticationError = 9,
-    AgreementRequired = 10
+    AgreementRequired = 10,
+    LoadingDll = 11
 };
 
 // One fixed value packet. No host-process pointers are meaningful to the hook.
@@ -134,7 +136,10 @@ struct Packet {
     DWORD result, flags, exceptionCode, reserved;
     std::uint64_t nonce;
     wchar_t email[320];
-    wchar_t password[8192];
+    union {
+        wchar_t password[8192];
+        wchar_t dllPath[4096];
+    };
     gw2::Layout layout;
 };
 static_assert(sizeof(Packet) == ((17064 + sizeof(gw2::Layout) + 7) & ~std::size_t{7}));
@@ -479,6 +484,42 @@ DWORD ApplyGuarded(Packet *request, HWND window) {
     }
 }
 
+DWORD WINAPI LoadDllWorker(void *parameter) {
+    auto p = static_cast<Packet *>(parameter);
+    DWORD error{};
+    __try {
+        // This worker owns its mapping and one bridge reference, even if the
+        // host times out. Never load third-party code in DllMain or a UI callback.
+        SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, nullptr);
+        if (!LoadLibraryExW(p->dllPath, nullptr,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS))
+            error = GetLastError();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        error = GetExceptionCode();
+    }
+    p->exceptionCode = error;
+    SecureZeroMemory(p->password, sizeof(p->password));
+    InterlockedExchange(reinterpret_cast<volatile LONG *>(&p->result), error ? NativeFault : Completed);
+    UnmapViewOfFile(p);
+    // The requested DLL stays loaded until game exit; only release our worker's
+    // bridge reference, atomically with exit so no instruction runs after unload.
+    FreeLibraryAndExitThread(moduleHandle, 0);
+}
+
+DWORD StartDllLoad(Packet *p) {
+    if (!p->dllPath[0] || !wmemchr(p->dllPath, 0, 4096)) return ERROR_INVALID_PARAMETER;
+    HMODULE retained{};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<const wchar_t *>(&LoadDllWorker), &retained))
+        return GetLastError();
+    InterlockedExchange(reinterpret_cast<volatile LONG *>(&p->result), LoadingDll);
+    Handle thread(CreateThread(nullptr, 0, LoadDllWorker, p, 0, nullptr));
+    if (thread.value) return ERROR_SUCCESS;
+    const auto error = GetLastError();
+    FreeLibrary(retained);
+    return error;
+}
+
 bool CurrentUserSecurity(LocalBuffer &descriptor) {
     Handle token;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.value)) return false;
@@ -506,9 +547,19 @@ void ReceiveRequest(const CWPSTRUCT &message) {
     View view{static_cast<Packet *>(
         MapViewOfFile(mapping.value, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(Packet)))};
     auto p = view.value;
-    if (!p || p->magic != Magic || p->version != 9 || p->nonce != nonce ||
+    if (!p || p->magic != Magic || p->version != 10 || p->nonce != nonce ||
         p->targetPid != GetCurrentProcessId() || p->result != Pending)
         return;
+    if (p->operation == LoadDll) {
+        const auto error = StartDllLoad(p);
+        if (!error) {
+            view.value = nullptr; // The worker now owns this view.
+            return;
+        }
+        p->exceptionCode = error;
+        InterlockedExchange(reinterpret_cast<volatile LONG *>(&p->result), NativeFault);
+        return;
+    }
     const auto result = ApplyGuarded(p, message.hwnd);
     SecureZeroMemory(p->email, sizeof(p->email));
     SecureZeroMemory(p->password, sizeof(p->password));
@@ -528,7 +579,9 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
     *exceptionCode = 0;
     DWORD actualPid{};
     const auto thread = GetWindowThreadProcessId(window, &actualPid);
-    if (!thread || actualPid != targetPid || operation > EpicLogin) return ERROR_INVALID_PARAMETER;
+    if (!thread || actualPid != targetPid || operation > LoadDll) return ERROR_INVALID_PARAMETER;
+    if (operation == LoadDll && (!password || !password[0] || wcsnlen_s(password, 4096) >= 4096))
+        return ERROR_INVALID_PARAMETER;
     const size_t maximum = operation == EpicLogin ? 8192 : operation == SteamLogin ? 600 : 256;
     if ((operation == Login || operation == SteamLogin || operation == EpicLogin) &&
         (!email || !password || wcsnlen_s(email, 320) >= 320 || wcsnlen_s(password, maximum) >= maximum))
@@ -552,11 +605,12 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
     auto p = view.value;
     *p = {};
     p->magic = Magic;
-    p->version = 9;
+    p->version = 10;
     p->targetPid = targetPid;
     p->layout = *layout;
     p->nonce = nonce;
     p->operation = operation;
+    if (operation == LoadDll) wcscpy_s(p->dllPath, password);
     if (operation == Login || operation == SteamLogin || operation == EpicLogin) {
         wcscpy_s(p->email, email);
         wcscpy_s(p->password, password);
@@ -576,6 +630,16 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
     }
     // The hook maps its own view. On timeout it retains its mapping independently
     // until the callback returns. Never unmap or free target-process pointers here.
+    if (!error && operation == LoadDll) {
+        const auto deadline = GetTickCount64() + 10000;
+        while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&p->result), 0, 0) == LoadingDll) {
+            if (GetTickCount64() >= deadline) {
+                error = ERROR_TIMEOUT;
+                break;
+            }
+            Sleep(10);
+        }
+    }
     if (!error) {
         *result = p->result;
         *flags = p->flags;
