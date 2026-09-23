@@ -47,13 +47,13 @@ include_notice(".NET third parties"
 
 set(setup_dependencies gw2-multi-launcher ${native_targets}
   "${steam_output}/GW2MultiLauncher.Steam.dll"
-  README.md LICENSE "${notices}" src/icons/gw2-multi-launcher.bmp)
+  docs/README.md LICENSE "${notices}" src/icons/gw2-multi-launcher.bmp)
 
 if(WIN32)
   install(TARGETS gw2-multi-launcher ${native_targets} RUNTIME DESTINATION . LIBRARY DESTINATION .)
   install(DIRECTORY "${steam_output}/" DESTINATION steam USE_SOURCE_PERMISSIONS)
   install(FILES src/icons/gw2-multi-launcher.bmp DESTINATION .)
-  install(FILES README.md LICENSE "${notices}" DESTINATION .)
+  install(FILES docs/README.md LICENSE "${notices}" DESTINATION .)
   find_program(GW2_ISCC NAMES ISCC.exe ISCC HINTS
     "$ENV{LOCALAPPDATA}/GW2MultiLauncher-BuildTools/Inno Setup 7"
     "$ENV{LOCALAPPDATA}/GW2Launcher-BuildTools/Inno Setup 7"
@@ -92,7 +92,7 @@ Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/GW2MultiLauncher.Host.exe"; DestDir: "
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/GW2MultiLauncher.Native.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/gw2-multi-launcher.bmp"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@steam_output@/*"; DestDir: "{app}/steam"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "@CMAKE_SOURCE_DIR@/README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@CMAKE_SOURCE_DIR@/docs/README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_SOURCE_DIR@/LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_BINARY_DIR@/ThirdPartyNotices.txt"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -161,7 +161,7 @@ else()
     "[Desktop Entry]\nType=Application\nName=GW2 Multi Launcher\nComment=Launch your ArenaNet accounts\nExec=gw2-multi-launcher\nIcon=gw2-multi-launcher\nTerminal=false\nCategories=Game;\nStartupWMClass=GW2MultiLauncher\n")
   install(FILES "${CMAKE_BINARY_DIR}/gw2-multi-launcher.desktop" DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
   install(FILES src/icons/gw2-multi-launcher.png DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps)
-  install(FILES README.md LICENSE "${notices}" DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/gw2-multi-launcher)
+  install(FILES docs/README.md LICENSE "${notices}" DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/gw2-multi-launcher)
   set(CPACK_GENERATOR DEB)
   set(CPACK_PACKAGE_NAME gw2-multi-launcher)
   set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
