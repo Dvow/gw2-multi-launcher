@@ -80,6 +80,7 @@ enum class Icon {
     play,
     closeAll,
     edit,
+    collapse,
     show,
     settings,
     back,
@@ -119,6 +120,9 @@ void drawIcon(Icon icon, ImVec2 origin, ImU32 color, float scale) {
     case Icon::edit:
         stroke({{2, 10}, {10, 2}, {14, 6}, {6, 14}, {2, 14}}, true);
         stroke({{8, 4}, {12, 8}});
+        break;
+    case Icon::collapse:
+        stroke({{3, 10}, {8, 5}, {13, 10}});
         break;
     case Icon::show:
         stroke({{1, 8}, {4, 4}, {8, 3}, {12, 4}, {15, 8}, {12, 12}, {8, 13}, {4, 12}}, true);
@@ -886,7 +890,7 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     ImGui::SetCursorScreenPos(actions);
     if (account) {
         ImGui::BeginDisabled(session.active ? !session.canClose() || form.pending : busy);
-        if (iconButton(session.active || expanded ? Icon::close : Icon::edit,
+        if (iconButton(session.active ? Icon::close : expanded ? Icon::collapse : Icon::edit,
                 session.active ? "Close game"
                     : expanded ? "Close editor"
                                : "Edit account")) {

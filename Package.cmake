@@ -55,6 +55,7 @@ if(WIN32)
   install(FILES src/icons/gw2-multi-launcher.png DESTINATION .)
   install(FILES docs/README.md LICENSE "${notices}" DESTINATION .)
   find_program(GW2_ISCC NAMES ISCC.exe ISCC HINTS
+    "${CMAKE_SOURCE_DIR}/build/tools/Inno Setup 7"
     "$ENV{LOCALAPPDATA}/GW2MultiLauncher-BuildTools/Inno Setup 7"
     "$ENV{LOCALAPPDATA}/GW2Launcher-BuildTools/Inno Setup 7"
     "$ENV{ProgramFiles}/Inno Setup 7"

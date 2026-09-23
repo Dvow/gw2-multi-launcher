@@ -51,7 +51,7 @@ cmake --preset release
 cmake --build --preset release
 ```
 
-The installer is written to `build/release`. On Windows, run that from an x64 Visual Studio developer shell. Set `GW2_ISCC` if Inno Setup is not on `PATH`.
+The installer is written to `build/release`. On Windows, run that from an x64 Visual Studio developer shell. An unpacked Inno Setup 7 compiler can live in `build/tools/Inno Setup 7` (ignored by Git), which also avoids Microsoft Store PowerShell's AppData redirection. To select another compiler or replace a cached path, configure with `cmake --preset release -DGW2_ISCC="C:/path/to/Inno Setup/ISCC.exe"`.
 
 On Ubuntu, install `g++ cmake ninja-build pkg-config dpkg-dev libsecret-1-dev libssl-dev libcurl4-openssl-dev libgl-dev libx11-dev libxext-dev libxcursor-dev libxrandr-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev`, then configure with `-DCMAKE_INSTALL_PREFIX=/usr -DGW2_NATIVE_DIR=/path/to/matching/windows/bin`.
 
