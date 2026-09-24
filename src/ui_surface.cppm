@@ -29,8 +29,8 @@ enum class Insert : unsigned {
 
 struct Palette {
     ImVec4 background{0.055f, 0.067f, 0.082f, 1};
-    ImVec4 accent{0.68f, 0.55f, 1, 1};
-    ImVec4 primary{0.44f, 0.22f, 0.86f, 1};
+    ImVec4 accent{0.82f, 0.84f, 0.86f, 1};
+    ImVec4 primary{0.38f, 0.40f, 0.43f, 1};
     ImVec4 launch{0.09f, 0.45f, 0.25f, 1};
     ImVec4 close{0.72f, 0.17f, 0.28f, 1};
     ImVec4 muted{0.54f, 0.59f, 0.65f, 1};

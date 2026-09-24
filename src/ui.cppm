@@ -610,8 +610,8 @@ void publicStyle(ImGuiStyle &s) {
     s.Colors[ImGuiCol_Button] = {0.12f, 0.15f, 0.18f, 1};
     s.Colors[ImGuiCol_ButtonHovered] = {0.19f, 0.24f, 0.28f, 1};
     s.Colors[ImGuiCol_ButtonActive] = {0.23f, 0.29f, 0.32f, 1};
-    s.Colors[ImGuiCol_Header] = {0.16f, 0.12f, 0.22f, 1};
-    s.Colors[ImGuiCol_HeaderHovered] = {0.21f, 0.16f, 0.29f, 1};
+    s.Colors[ImGuiCol_Header] = {0.18f, 0.20f, 0.22f, 1};
+    s.Colors[ImGuiCol_HeaderHovered] = {0.24f, 0.26f, 0.29f, 1};
     s.Colors[ImGuiCol_HeaderActive] = ink().primary;
     s.Colors[ImGuiCol_CheckMark] = ink().accent;
     s.Colors[ImGuiCol_CheckboxSelectedBg] = s.Colors[ImGuiCol_FrameBgHovered];
