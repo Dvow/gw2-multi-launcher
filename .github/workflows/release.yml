@@ -118,9 +118,9 @@ jobs:
               test "$newest" = "$version" && test "${latest#v}" != "$version"
             fi
             gh release create "$tag" --draft --target "$GITHUB_SHA" \
-              --title "GW2 Multi $tag" --generate-notes
+              --title "Gw2 Multi $tag" --generate-notes
           fi
           gh release upload "$tag" "build/release/gw2-multi-launcher_${version}_win-x64_setup.exe" \
             "build/release/gw2-multi-launcher_${version}_amd64.deb" --clobber
           publish_metadata
-          gh release edit "$tag" --title "GW2 Multi $tag" --target "$GITHUB_SHA" --draft=false --latest
+          gh release edit "$tag" --title "Gw2 Multi $tag" --target "$GITHUB_SHA" --draft=false --latest

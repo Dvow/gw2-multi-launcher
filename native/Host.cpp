@@ -13,11 +13,11 @@
 
 import game;
 
-extern "C" __declspec(dllimport) DWORD __cdecl KxExecute(
+extern "C" __declspec(dllimport) DWORD __cdecl Gw2MultiLauncherExecute(
     HWND, DWORD, DWORD, const wchar_t *, const wchar_t *, DWORD *, DWORD *, DWORD *, const gw2::Layout *);
 
 namespace {
-constexpr DWORD Magic = 0x36585747; // Protocol 6: launch settings, credentials and verification/control messages.
+constexpr DWORD Magic = 0x364C4D47; // GML6: launch settings, credentials and verification/control messages.
 // Connected, Show, invalid input, setup cancel, Close, stop input reader.
 std::atomic<unsigned> control{1};
 struct Failure {
@@ -110,7 +110,7 @@ class DllCopies {
                 offset += written;
             }
         }
-        // Keep the basename: KX and other add-ons resolve their host by name.
+        // Keep the basename: add-ons may resolve their own module by name.
         // The source handle closes here; only the independent copy is loaded.
         paths_.push_back(pending.paths);
         pending.fileOwned = pending.folderOwned = false;
@@ -380,7 +380,7 @@ bool Control(Client &client) {
 DWORD Native(Client &client, DWORD operation, DWORD &flags, const wchar_t *email = nullptr,
     const wchar_t *password = nullptr) {
     DWORD result{}, error{};
-    const auto transport = KxExecute(
+    const auto transport = Gw2MultiLauncherExecute(
         client.login, client.pid, operation, email, password, &result, &flags, &error, &client.layout);
     if (transport) throw Failure{transport};
     if (result == 6) throw Failure{error};

@@ -166,8 +166,8 @@ inline Secret unbase64(std::string_view text) {
 inline std::filesystem::path dataRoot() {
 #ifdef _WIN32
     PWSTR directory{};
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &directory)))
-        throw std::runtime_error("Cannot find the local application data directory.");
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_CREATE, nullptr, &directory)))
+        throw std::runtime_error("Cannot find the application data directory.");
     std::filesystem::path root(directory);
     CoTaskMemFree(directory);
 #else
@@ -177,7 +177,7 @@ inline std::filesystem::path dataRoot() {
                                                        : std::filesystem::path{};
     if (root.empty()) throw std::runtime_error("Cannot find your home directory.");
 #endif
-    root /= "KX/GW2MultiLauncher";
+    root /= "GW2 Multi Launcher";
     std::filesystem::create_directories(root);
 #ifndef _WIN32
     if (chmod(root.c_str(), 0700)) throw std::runtime_error("Cannot protect the account directory.");
@@ -277,8 +277,7 @@ struct KeyringReply {
     }
 };
 Secret keyring(bool create, std::stop_token stop) {
-    // Keep the vault attributes stable so existing Linux accounts stay decryptable.
-    static const SecretSchema schema = {"org.kx.GW2MultiLauncher", SECRET_SCHEMA_DONT_MATCH_NAME,
+    static const SecretSchema schema = {"io.github.Dvow.GW2MultiLauncher", SECRET_SCHEMA_NONE,
         {{"application", SECRET_SCHEMA_ATTRIBUTE_STRING}, {"vault", SECRET_SCHEMA_ATTRIBUTE_STRING},
             {nullptr, SECRET_SCHEMA_ATTRIBUTE_STRING}},
         0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -314,7 +313,7 @@ Secret keyring(bool create, std::stop_token stop) {
             r.value = secret_password_lookup_finish(result, &r.error);
             r.done = true;
         },
-        &reply, "application", "kx-gw2-launcher", "vault", "v1", nullptr);
+        &reply, "application", "gw2-multi-launcher", "vault", "v1", nullptr);
     wait(reply);
     if (reply.value) {
         auto key = unbase64(reply.value);
@@ -340,7 +339,7 @@ Secret keyring(bool create, std::stop_token stop) {
             r.stored = secret_password_store_finish(result, &r.error);
             r.done = true;
         },
-        &saved, "application", "kx-gw2-launcher", "vault", "v1", nullptr);
+        &saved, "application", "gw2-multi-launcher", "vault", "v1", nullptr);
     wait(saved);
     if (!saved.stored) throw std::runtime_error("The desktop keyring could not save the launcher key.");
     return key;
@@ -353,7 +352,7 @@ Secret crypt(std::span<const unsigned char> input, bool encrypt, bool create, st
     (void)create;
     DATA_BLOB source{static_cast<DWORD>(input.size()), const_cast<BYTE *>(input.data())}, output{};
     bool ok = encrypt
-        ? CryptProtectData(&source, L"KX GW2 Multi Launcher account", nullptr, nullptr, nullptr,
+        ? CryptProtectData(&source, L"GW2 Multi Launcher account", nullptr, nullptr, nullptr,
               CRYPTPROTECT_UI_FORBIDDEN, &output)
         : CryptUnprotectData(&source, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output);
     if (!ok)
@@ -369,9 +368,9 @@ Secret crypt(std::span<const unsigned char> input, bool encrypt, bool create, st
     std::memcpy(result.bytes.data(), output.pbData, output.cbData);
     return result;
 #else
-    if (!encrypt && (input.size() < 32 || std::memcmp(input.data(), "KX01", 4)))
+    if (!encrypt && (input.size() < 32 || std::memcmp(input.data(), "GML1", 4)))
         throw std::runtime_error(
-            "Add this account again on Linux; Windows-encrypted passwords cannot be imported.");
+            "This encrypted account format is unsupported. Add the account again on this system.");
     auto key = detail::keyring(encrypt && create, stop);
     Secret result(encrypt ? input.size() + 32 : input.size() - 32);
     auto context = std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)>(
@@ -384,7 +383,7 @@ Secret crypt(std::span<const unsigned char> input, bool encrypt, bool create, st
     };
     int length{}, finalLength{};
     if (encrypt) {
-        std::memcpy(result.bytes.data(), "KX01", 4);
+        std::memcpy(result.bytes.data(), "GML1", 4);
         random(std::span(result.bytes).subspan(4, 12));
         check(EVP_EncryptInit_ex(
             context.get(), EVP_aes_256_gcm(), nullptr, key.bytes.data(), result.bytes.data() + 4));
@@ -558,8 +557,8 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
             if (value) WinHttpCloseHandle(value);
         }
     };
-    Internet session{
-        WinHttpOpen(L"GW2MultiLauncher/0.2", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
+    Internet session{WinHttpOpen(L"GW2MultiLauncher/" GW2_APP_VERSION,
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
     if (!session.value) throw std::runtime_error("Could not open a secure connection.");
     WinHttpSetTimeouts(session.value, 3000, 3000, 3000, 5000);
     auto server = utf16(host), route = utf16(resource);
@@ -632,7 +631,7 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
         curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, body.data());
         curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
     }
-    curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "GW2MultiLauncher/0.2");
+    curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "GW2MultiLauncher/" GW2_APP_VERSION);
     curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 3L);
     curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, download ? 600L : 15L);
     curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, download ? 1L : 0L);

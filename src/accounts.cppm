@@ -146,7 +146,7 @@ inline std::vector<std::string> arguments(const Account &account, const Catalog 
     }
     auto id = account.id;
     std::erase(id, '-');
-    std::vector<std::string> result{"-shareArchive", "-webdisablecache", "-mumble", "KX-" + id};
+    std::vector<std::string> result{"-shareArchive", "-webdisablecache", "-mumble", "GW2MultiLauncher-" + id};
     if (account.provider == Provider::arenaNet) result.insert(result.end(), {"-provider", "Portal"});
     for (const auto &option : combined) {
         result.push_back("-" + option.name);

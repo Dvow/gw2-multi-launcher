@@ -90,7 +90,6 @@ if(WIN32)
   find_program(GW2_ISCC NAMES ISCC.exe ISCC HINTS
     "${innosetup_dir}"
     "$ENV{LOCALAPPDATA}/GW2MultiLauncher-BuildTools/Inno Setup 7"
-    "$ENV{LOCALAPPDATA}/GW2Launcher-BuildTools/Inno Setup 7"
     "$ENV{ProgramFiles}/Inno Setup 7"
     "$ENV{ProgramFiles}/Inno Setup 6"
     "$ENV{ProgramFiles\(x86\)}/Inno Setup 7"
@@ -137,10 +136,6 @@ Source: "@CMAKE_BINARY_DIR@/ThirdPartyNotices.txt"; DestDir: "{app}"; Flags: ign
 [InstallDelete]
 Type: files; Name: "{app}\gw2-multi-launcher.bmp"
 Type: files; Name: "{app}\gw2-multi-launcher.png"
-Type: files; Name: "{app}\Gw2Launcher.exe"
-Type: files; Name: "{app}\Gw2Launcher.Host.exe"
-Type: files; Name: "{app}\Gw2Launcher.Native.dll"
-Type: files; Name: "{app}\steam\Gw2Launcher.Steam.*"
 
 [Icons]
 Name: "{userprograms}\GW2 Multi Launcher"; Filename: "{app}\GW2MultiLauncher.exe"; WorkingDir: "{app}"
@@ -243,8 +238,6 @@ else()
   set(CPACK_PACKAGING_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
   set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE amd64)
   set(CPACK_DEBIAN_PACKAGE_SECTION games)
-  set(CPACK_DEBIAN_PACKAGE_REPLACES "gw2-launcher")
-  set(CPACK_DEBIAN_PACKAGE_CONFLICTS "gw2-launcher")
   set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
   set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsecret-1-0, libgl1, libx11-6, libxcursor1, libxrandr2, libxi6, libxfixes3, libxss1, libxtst6, xwayland, pkexec")
   set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "gnome-keyring")

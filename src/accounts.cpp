@@ -3,7 +3,6 @@ module;
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <memory>
 #include <nlohmann/json.hpp>
 #include <span>
 #include <stdexcept>
@@ -35,24 +34,16 @@ void Store::save(Catalog next) {
 }
 
 Store::Store() {
-    auto file = root_ / "accounts.json";
-    std::unique_ptr<FileLock> legacyLock;
-    if (!std::filesystem::exists(file)) {
-        const auto legacy = root_.parent_path() / "Gw2Launcher";
-        file = legacy / "accounts.json";
-        if (!std::filesystem::exists(file)) return;
-        // Import one validated snapshot while the previous catalog is locked.
-        // Once the new catalog exists, it is authoritative, including an empty one.
-        legacyLock = std::make_unique<FileLock>(legacy / "writer.lock");
-    }
+    const auto file = root_ / "accounts.json";
+    if (!std::filesystem::exists(file)) return;
     if (std::filesystem::file_size(file) > 4 * 1024 * 1024)
         throw std::runtime_error("The account catalog is too large.");
     try {
         std::ifstream stream(file);
         const auto json = nlohmann::json::parse(stream);
         const auto version = json.at("Version").get<int>();
-        if (version < 1 || version > 3)
-            throw std::runtime_error("This account catalog needs a newer launcher.");
+        if (version != 3)
+            throw std::runtime_error("This account catalog version is unsupported.");
         catalog_.gamePath = json.at("GamePath").get<std::string>();
         catalog_.arguments = json.value("Arguments", "");
         catalog_.dlls = json.value("Dlls", std::vector<std::string>{});
@@ -76,7 +67,6 @@ Store::Store() {
                 a.value("Identity", ""), a.value("Username", ""),
                 a.value("Dlls", std::vector<std::string>{})});
         validate(catalog_);
-        if (legacyLock) save(catalog_);
     } catch (const nlohmann::json::exception &) {
         throw std::runtime_error("The account catalog is corrupt. Restore accounts.json from your backup.");
     }

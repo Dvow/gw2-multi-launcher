@@ -134,7 +134,7 @@ class SteamConnection {
 
 inline void gameRequest(Bytes &out, const Catalog &catalog, const Account &account,
     const std::vector<std::string> &dlls) {
-    appendNumber(out, 0x36585747);
+    appendNumber(out, 0x364C4D47);
     appendNumber(out,
         account.provider == Provider::epic        ? 3u
             : account.provider == Provider::steam ? 2u
@@ -208,7 +208,7 @@ inline void report(std::span<const unsigned char> bytes) {
         connected = false;
 }
 inline void report(unsigned state, unsigned detail = 0) {
-    const std::array<unsigned, 3> record{0x36585747, state, detail};
+    const std::array<unsigned, 3> record{0x364C4D47, state, detail};
     report({reinterpret_cast<const unsigned char *>(record.data()), sizeof(record)});
 }
 inline void readControl() {
@@ -289,7 +289,7 @@ class SteamSession {
         (void)identityFields.next();
         identityFields.end();
         offset += secretSize;
-        if (size - offset < 20 || number(request.bytes, offset) != 0x36585747 ||
+        if (size - offset < 20 || number(request.bytes, offset) != 0x364C4D47 ||
             number(request.bytes, offset + 4) != 2)
             throw std::runtime_error("Invalid session request.");
         steam = std::make_unique<SteamConnection>();
@@ -403,7 +403,7 @@ class SteamSession {
         received += game->read(std::span(record).subspan(received));
         if (received != record.size()) return true;
         received = 0;
-        if (number(record) != 0x36585747) throw std::runtime_error("Invalid game helper status.");
+        if (number(record) != 0x364C4D47) throw std::runtime_error("Invalid game helper status.");
         broker::report(record);
         if (number(record, 4) == 9 && stage != Stage::failed) {
             stage = Stage::name;

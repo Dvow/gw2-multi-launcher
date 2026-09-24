@@ -48,6 +48,12 @@ close the launcher first.
 - **Windows 10/11:** download the setup from [Releases](https://github.com/Dvow/gw2-multi-launcher/releases).
 - **Ubuntu 26.04:** install the `.deb` from that page with `sudo apt install ./gw2-multi-launcher_*_amd64.deb`. Configure Wine or Proton under **Wine / Proton** in Settings.
 
+Accounts and settings are stored in `%APPDATA%\GW2 Multi Launcher` on Windows
+(Roaming AppData), or `$XDG_DATA_HOME/GW2 Multi Launcher` on Linux (normally
+`~/.local/share/GW2 Multi Launcher`). Only this folder is used. If it has no
+settings, the launcher starts fresh; older locations and settings formats are
+not imported.
+
 Not an official ArenaNet app. Two-factor still works like a normal login.
 
 <details>

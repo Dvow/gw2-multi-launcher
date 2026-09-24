@@ -89,7 +89,7 @@ struct Snapshot {
 };
 
 class App {
-    static constexpr std::uint32_t magic = 0x36585747;
+    static constexpr std::uint32_t magic = 0x364C4D47;
     struct Session {
         SessionView view;
         std::unique_ptr<Process> process;

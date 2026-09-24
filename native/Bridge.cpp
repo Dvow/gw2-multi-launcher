@@ -101,8 +101,8 @@ DWORD ReleaseInstanceMutex() {
 }
 
 namespace {
-constexpr wchar_t MessageName[] = L"KX.GW2MultiLauncher.Native.12";
-constexpr DWORD Magic = 0x31584B47;
+constexpr wchar_t MessageName[] = L"GW2MultiLauncher.Native.13";
+constexpr DWORD Magic = 0x4E4C4D47; // GMLN: GW2 Multi Launcher native packet.
 
 enum Operation : DWORD {
     Probe = 0,
@@ -179,7 +179,7 @@ struct LocalBuffer {
 };
 
 void MappingName(wchar_t (&name)[96], DWORD caller, std::uint64_t nonce) {
-    swprintf_s(name, L"Local\\KX.GW2MultiLauncher.%lu.%016llX", caller, nonce);
+    swprintf_s(name, L"Local\\GW2MultiLauncher.%lu.%016llX", caller, nonce);
 }
 
 bool IsReadable(const void *address, SIZE_T size) {
@@ -595,7 +595,7 @@ void ReceiveRequest(const CWPSTRUCT &message) {
     View view{static_cast<Packet *>(
         MapViewOfFile(mapping.value, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(Packet)))};
     auto p = view.value;
-    if (!p || p->magic != Magic || p->version != 12 || p->nonce != nonce ||
+    if (!p || p->magic != Magic || p->version != 13 || p->nonce != nonce ||
         p->targetPid != GetCurrentProcessId() || p->result != Pending)
         return;
     if (p->operation == LoadDll) {
@@ -613,14 +613,15 @@ void ReceiveRequest(const CWPSTRUCT &message) {
     SecureZeroMemory(p->password, sizeof(p->password));
     InterlockedExchange(reinterpret_cast<volatile LONG *>(&p->result), result);
 }
-extern "C" __declspec(dllexport) LRESULT CALLBACK KxLauncherHook(int code, WPARAM wParam, LPARAM lParam) {
+extern "C" __declspec(dllexport) LRESULT CALLBACK Gw2MultiLauncherHook(
+    int code, WPARAM wParam, LPARAM lParam) {
     if (code >= 0 && lParam) ReceiveRequest(*reinterpret_cast<const CWPSTRUCT *>(lParam));
     return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
-extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targetPid, DWORD operation,
-    const wchar_t *email, const wchar_t *password, DWORD *result, DWORD *flags, DWORD *exceptionCode,
-    const gw2::Layout *layout) {
+extern "C" __declspec(dllexport) DWORD __cdecl Gw2MultiLauncherExecute(
+    HWND window, DWORD targetPid, DWORD operation, const wchar_t *email, const wchar_t *password,
+    DWORD *result, DWORD *flags, DWORD *exceptionCode, const gw2::Layout *layout) {
     if (!result || !flags || !exceptionCode || !layout) return ERROR_INVALID_PARAMETER;
     *result = Pending;
     *flags = 0;
@@ -658,7 +659,7 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
     auto p = view.value;
     *p = {};
     p->magic = Magic;
-    p->version = 12;
+    p->version = 13;
     p->targetPid = targetPid;
     p->layout = *layout;
     p->nonce = nonce;
@@ -672,7 +673,7 @@ extern "C" __declspec(dllexport) DWORD __cdecl KxExecute(HWND window, DWORD targ
         wcscpy_s(p->email, email);
         wcscpy_s(p->password, password);
     }
-    Hook hook{SetWindowsHookExW(WH_CALLWNDPROC, KxLauncherHook, moduleHandle, thread)};
+    Hook hook{SetWindowsHookExW(WH_CALLWNDPROC, Gw2MultiLauncherHook, moduleHandle, thread)};
     DWORD error{};
     if (!hook.value)
         error = GetLastError();
