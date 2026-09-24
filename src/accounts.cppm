@@ -266,7 +266,7 @@ class Store {
                 if (i != 8 && i != 13 && i != 18 && i != 23 && !(id[i] >= '0' && id[i] <= '9') &&
                     !(id[i] >= 'a' && id[i] <= 'f'))
                     throw std::runtime_error("Invalid account ID.");
-            if (trim(a.label).empty() || a.label.size() > 320 || a.protectedCredentials.empty() ||
+            if (a.protectedCredentials.empty() ||
                 a.protectedCredentials.size() > 16384)
                 throw std::runtime_error("The account catalog contains an invalid account.");
             if (a.provider != Provider::arenaNet && a.provider != Provider::steam &&
@@ -357,23 +357,16 @@ class Store {
         email = trim(email);
         args = trim(args);
         (void)options(args);
-        if (!label.empty() && std::ranges::any_of(label, [](unsigned char c) { return c < 32 || c == 127; }))
-            throw std::runtime_error("Use a single-line account name.");
-        auto name = utf16(label);
-        if (!label.empty() && name.bytes.size() / 2 > 81)
-            throw std::runtime_error("Use an account name of 1–80 characters.");
+        std::erase(label, '\0');
         if (id.empty() && catalog_.accounts.size() >= 100)
             throw std::runtime_error("The account limit is 100.");
         Account updated{id.empty() ? identifier() : id, std::move(label), {}, std::move(args), provider};
         updated.dlls = std::move(dlls);
         validateDlls(updated.dlls);
         auto record = accountRecord(updated, id, email, std::move(replacement), std::move(session), stop);
-        if (updated.label.empty())
-            updated.label = trim(updated.provider == Provider::arenaNet ? email : updated.username);
-        if (updated.label.empty() || updated.label.size() > 320)
-            throw std::runtime_error("Use an account name of 1–80 characters.");
-        if (std::ranges::any_of(updated.label, [](unsigned char c) { return c < 32 || c == 127; }))
-            throw std::runtime_error("Use a single-line account name.");
+        if (updated.provider == Provider::arenaNet && !email.empty())
+            updated.username = email;
+        std::erase(updated.label, '\0');
         auto encrypted = crypt(record.bytes, true, catalog_.accounts.empty(), stop);
         updated.protectedCredentials = base64(encrypted.bytes);
         auto next = catalog_;

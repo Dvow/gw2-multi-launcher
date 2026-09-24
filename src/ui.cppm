@@ -271,7 +271,7 @@ struct Form {
     bool rowsMoving{}, scrollToNew{};
     std::vector<std::string> selected;
     std::string id, localError, notifiedUpdate;
-    std::array<char, 321> label{};
+    std::array<char, 1281> label{};
     std::array<char, 1281> email{};
     std::array<char, 1025> password{};
     std::array<char, 6> guard{};
@@ -937,7 +937,10 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     const auto available = width - 2 * inset;
     const auto textWidth = available - (account ? 72 : 36) * scale;
     ImGui::SetCursorScreenPos(pos);
-    clippedText(account ? account->label.c_str() : "Add account", textWidth);
+    const char *title = "Add account";
+    if (account)
+        title = !account->label.empty() ? account->label.c_str() : account->username.c_str();
+    clippedText(title, textWidth);
     const auto statusY = pos.y + ImGui::GetTextLineHeightWithSpacing();
     ImGui::SetCursorScreenPos({pos.x, statusY});
     char pid[32]{};
