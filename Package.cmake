@@ -156,6 +156,37 @@ function WaitForSingleObject(Handle: THandle; Milliseconds: LongWord): LongWord;
   external 'WaitForSingleObject@kernel32.dll stdcall';
 function CloseHandle(Handle: THandle): Integer;
   external 'CloseHandle@kernel32.dll stdcall';
+function MoveFileEx(ExistingFile, NewFile: String; Flags: Cardinal): Integer;
+  external 'MoveFileExW@kernel32.dll stdcall';
+
+procedure ParkInstalledFile(Name: String);
+var
+  Path, Backup: String;
+  Index: Integer;
+begin
+  Path := ExpandConstant(Name);
+  if not FileExists(Path) then Exit;
+  if DeleteFile(Path) then Exit;
+  Index := 0;
+  while Index < 20 do
+  begin
+    if Index = 0 then Backup := Path + '.old' else Backup := Path + '.old' + IntToStr(Index);
+    if not FileExists(Backup) then Break;
+    if DeleteFile(Backup) then Break;
+    Index := Index + 1;
+  end;
+  if Index < 20 then MoveFileEx(Path, Backup, 0);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep <> ssInstall then Exit;
+  ParkInstalledFile('{app}\GW2MultiLauncher.exe');
+  ParkInstalledFile('{app}\GW2MultiLauncher.Host.exe');
+  ParkInstalledFile('{app}\GW2MultiLauncher.Native.dll');
+  ParkInstalledFile('{app}\steam\GW2MultiLauncher.Steam.exe');
+  ParkInstalledFile('{app}\steam\GW2MultiLauncher.Steam.dll');
+end;
 
 function IsLauncherUpdate: Boolean;
 begin

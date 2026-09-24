@@ -23,4 +23,5 @@ AppUpdate checkAppUpdate(std::stop_token stop);
 std::filesystem::path downloadAppUpdate(const AppUpdate &release, std::stop_token stop);
 void installAppUpdate(const AppUpdate &release, std::stop_token stop);
 void relaunchUpdatedApp();
+void clearParkedFiles();
 } // namespace gw2

@@ -8,6 +8,7 @@ module;
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <stop_token>
+#include <system_error>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -123,6 +124,28 @@ void installAppUpdate(const AppUpdate &release, std::stop_token stop) {
     if (result != 0)
         throw std::runtime_error(
             "Installation was cancelled or failed. Try again and approve the system prompt.");
+#endif
+}
+void removeParked(const std::filesystem::path &file) {
+    std::error_code error;
+    auto parked = file;
+    parked += ".old";
+    std::filesystem::remove(parked, error);
+    for (int index = 1; index < 20; ++index) {
+        auto extra = file;
+        extra += ".old";
+        extra += std::to_string(index);
+        std::filesystem::remove(extra, error);
+    }
+}
+void clearParkedFiles() {
+#ifdef _WIN32
+    const auto base = SDL_GetBasePath();
+    if (!base) return;
+    const std::filesystem::path root(base);
+    for (const char *name : {"GW2MultiLauncher.exe", "GW2MultiLauncher.Host.exe", "GW2MultiLauncher.Native.dll",
+             "steam/GW2MultiLauncher.Steam.exe", "steam/GW2MultiLauncher.Steam.dll"})
+        removeParked(root / name);
 #endif
 }
 void relaunchUpdatedApp() {
