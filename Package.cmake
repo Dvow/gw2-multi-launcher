@@ -45,6 +45,33 @@ include_notice(".NET third parties"
   "https://raw.githubusercontent.com/dotnet/runtime/v10.0.11/THIRD-PARTY-NOTICES.TXT"
   66f1d4e44973185519bb4aa8a9718eb22fc7af2cc532e3ae9cfc4c127ee7fc54)
 
+function(gw2_fetch_innosetup destination)
+  set(installer "${CMAKE_BINARY_DIR}/innosetup-7.1.0-x64.exe")
+  message(STATUS "Downloading Inno Setup 7.1.0")
+  file(DOWNLOAD
+    "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe"
+    "${installer}"
+    EXPECTED_HASH SHA256=0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f
+    TLS_VERIFY ON
+    STATUS download_status
+    TIMEOUT 120)
+  list(GET download_status 0 download_code)
+  if(NOT download_code EQUAL 0)
+    list(GET download_status 1 download_message)
+    message(FATAL_ERROR "Inno Setup download failed: ${download_message}")
+  endif()
+  execute_process(
+    COMMAND "${installer}"
+      /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CURRENTUSER /PORTABLE=1
+      "/DIR=${destination}"
+    RESULT_VARIABLE setup_code
+    OUTPUT_VARIABLE setup_output
+    ERROR_VARIABLE setup_error)
+  if(NOT setup_code EQUAL 0 OR NOT EXISTS "${destination}/ISCC.exe")
+    message(FATAL_ERROR "Inno Setup 7.1.0 setup failed (${setup_code}): ${setup_output}${setup_error}")
+  endif()
+endfunction()
+
 set(setup_dependencies gw2-multi-launcher ${native_targets}
   "${steam_output}/GW2MultiLauncher.Steam.dll"
   docs/README.md LICENSE "${notices}" src/icons/gw2-multi-launcher.png)
@@ -53,17 +80,26 @@ if(WIN32)
   install(TARGETS gw2-multi-launcher ${native_targets} RUNTIME DESTINATION . LIBRARY DESTINATION .)
   install(DIRECTORY "${steam_output}/" DESTINATION steam USE_SOURCE_PERMISSIONS)
   install(FILES docs/README.md LICENSE "${notices}" DESTINATION .)
+  include_notice("Inno Setup"
+    "https://raw.githubusercontent.com/jrsoftware/issrc/is-7_1_0/license.txt"
+    2e5346868c2a18434489824e11d65c3031620f792fefc415d05f19cd441abf5c)
+  set(innosetup_dir "${CMAKE_SOURCE_DIR}/build/tools/Inno Setup 7")
   if(DEFINED CACHE{GW2_ISCC} AND NOT EXISTS "${GW2_ISCC}")
     unset(GW2_ISCC CACHE)
   endif()
   find_program(GW2_ISCC NAMES ISCC.exe ISCC HINTS
-    "${CMAKE_SOURCE_DIR}/build/tools/Inno Setup 7"
+    "${innosetup_dir}"
     "$ENV{LOCALAPPDATA}/GW2MultiLauncher-BuildTools/Inno Setup 7"
     "$ENV{LOCALAPPDATA}/GW2Launcher-BuildTools/Inno Setup 7"
     "$ENV{ProgramFiles}/Inno Setup 7"
     "$ENV{ProgramFiles}/Inno Setup 6"
     "$ENV{ProgramFiles\(x86\)}/Inno Setup 7"
-    "$ENV{ProgramFiles\(x86\)}/Inno Setup 6" REQUIRED)
+    "$ENV{ProgramFiles\(x86\)}/Inno Setup 6")
+  if(NOT GW2_ISCC)
+    gw2_fetch_innosetup("${innosetup_dir}")
+    set(GW2_ISCC "${innosetup_dir}/ISCC.exe" CACHE FILEPATH "Path to ISCC.exe" FORCE)
+    set(GW2_ISCC "${innosetup_dir}/ISCC.exe")
+  endif()
   set(setup [=[
 [Setup]
 AppId=GW2MultiLauncher

@@ -53,7 +53,7 @@ Not an official ArenaNet app. Two-factor still works like a normal login.
 <details>
 <summary>Build</summary>
 
-CMake 3.30+, Ninja, and the .NET 10 SDK. Windows also needs MSVC x64, the Windows SDK, and Inno Setup 6 or 7.
+CMake 3.30+, Ninja, and the .NET 10 SDK. Windows also needs MSVC x64 and the Windows SDK.
 
 ```sh
 cmake --preset release
@@ -62,7 +62,7 @@ cmake --build --preset release
 
 The installer is written to `build/release`. On Windows, regular PowerShell works when the MSVC x64 and Windows SDK build environment is configured. Visual Studio's Developer PowerShell is one way to set that up; you do not need to switch terminals if your current session already builds successfully.
 
-An unpacked Inno Setup 7 compiler can live in `build/tools/Inno Setup 7` (ignored by Git), which also avoids Microsoft Store PowerShell's AppData redirection. To select another compiler or replace a cached path, configure with `cmake --preset release -DGW2_ISCC="C:/path/to/Inno Setup/ISCC.exe"`.
+Windows configure downloads Inno Setup 7.1.0 into `build/tools/Inno Setup 7` when `ISCC.exe` is not already available. That folder is ignored by Git. To select another compiler, configure with `cmake --preset release -DGW2_ISCC="C:/path/to/Inno Setup/ISCC.exe"`.
 
 On Ubuntu, install `g++ cmake ninja-build pkg-config dpkg-dev libsecret-1-dev libssl-dev libcurl4-openssl-dev libgl-dev libx11-dev libxext-dev libxcursor-dev libxrandr-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev`, then configure with `-DCMAKE_INSTALL_PREFIX=/usr -DGW2_NATIVE_DIR=/path/to/matching/windows/bin`.
 
