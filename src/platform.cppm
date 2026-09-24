@@ -9,7 +9,6 @@ module;
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <optional>
 #include <span>
 #include <stdexcept>
 #include <stop_token>
@@ -19,8 +18,6 @@ module;
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
-#include <psapi.h>
-#include <tlhelp32.h>
 #include <wincrypt.h>
 #include <bcrypt.h>
 #include <winhttp.h>
@@ -693,47 +690,6 @@ std::string sha256(std::span<const unsigned char> bytes) {
         result += hex[byte & 15];
     }
     return result;
-}
-std::optional<std::uint64_t> committedBytes(unsigned pid) {
-#ifdef _WIN32
-    if (!pid) return std::nullopt;
-    const DWORD root = pid;
-    HANDLE rootProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, root);
-    if (!rootProcess) return std::nullopt;
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    std::vector<std::pair<DWORD, DWORD>> processes;
-    if (snapshot != INVALID_HANDLE_VALUE) {
-        PROCESSENTRY32W entry{};
-        entry.dwSize = sizeof(entry);
-        if (Process32FirstW(snapshot, &entry)) {
-            do processes.emplace_back(entry.th32ProcessID, entry.th32ParentProcessID);
-            while (Process32NextW(snapshot, &entry));
-        }
-        CloseHandle(snapshot);
-    }
-    std::vector<DWORD> members{root};
-    for (std::size_t index = 0; index < members.size(); ++index) {
-        for (const auto &process : processes) {
-            if (process.second != members[index]) continue;
-            if (std::ranges::find(members, process.first) != members.end()) continue;
-            members.push_back(process.first);
-        }
-    }
-    std::uint64_t total{};
-    for (const auto member : members) {
-        HANDLE process = member == root ? rootProcess : OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, member);
-        if (!process) continue;
-        PROCESS_MEMORY_COUNTERS_EX counters{};
-        counters.cb = sizeof(counters);
-        if (GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&counters), sizeof(counters)))
-            total += counters.PrivateUsage;
-        CloseHandle(process);
-    }
-    return total;
-#else
-    (void)pid;
-    return std::nullopt;
-#endif
 }
 std::string latestBuild(std::stop_token stop) {
     auto reply = https("api.guildwars2.com", "/v2/build", {}, {}, stop);

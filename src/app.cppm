@@ -97,8 +97,7 @@ class App {
         std::size_t written{}, received{};
         std::array<unsigned char, 12> record{};
         std::uint64_t deadline{};
-        std::uint64_t commitBytes{}, commitChecked{}, commitQuietSince{};
-        bool show{}, failed{}, closeRequested{}, startupReady{};
+        bool show{}, failed{}, closeRequested{};
     };
     std::mutex mutex_;
     std::condition_variable_any changed_;
@@ -111,7 +110,6 @@ class App {
     std::unique_ptr<Store> store_;
     std::vector<Session> sessions_;
     std::deque<std::string> launches_;
-    bool loadPending_{};
     std::uint32_t wantedBuild_{};
     std::unique_ptr<SteamConnection> auth_;
     std::optional<EpicConnection> epic_;
@@ -136,52 +134,7 @@ class App {
         SDL_PushEvent(&event);
     }
     bool blocked() const {
-        return loadPending_ || std::ranges::any_of(sessions_, [](const Session &s) { return s.view.blocking(); });
-    }
-    bool startupSettled(Session &session, bool &changed) {
-        if (session.startupReady) return true;
-        const auto now = SDL_GetTicks();
-        if (session.commitChecked && now - session.commitChecked < 500) return false;
-        session.commitChecked = now;
-        const auto bytes = committedBytes(session.view.pid);
-        if (!bytes) {
-            session.startupReady = true;
-            return true;
-        }
-        constexpr std::uint64_t slack = 64ull << 20;
-        constexpr std::uint64_t quietMs = 8000;
-        const auto showLoading = [&] {
-            if (session.view.status == "Loading game…") return;
-            session.view.status = "Loading game…";
-            changed = true;
-        };
-        if (*bytes > session.commitBytes + slack) {
-            session.commitBytes = *bytes;
-            session.commitQuietSince = now;
-            showLoading();
-            return false;
-        }
-        if (!session.commitQuietSince) session.commitQuietSince = now;
-        if (now - session.commitQuietSince < quietMs) {
-            showLoading();
-            return false;
-        }
-        session.startupReady = true;
-        if (session.view.status == "Loading game…") {
-            session.view.status = "Running";
-            changed = true;
-        }
-        return true;
-    }
-    bool watchStartup() {
-        bool changed{};
-        loadPending_ = false;
-        for (auto &session : sessions_) {
-            if (!session.view.active || session.view.id.empty() || session.failed || session.view.state != 4)
-                continue;
-            if (!startupSettled(session, changed)) loadPending_ = true;
-        }
-        return changed;
+        return std::ranges::any_of(sessions_, [](const Session &s) { return s.view.blocking(); });
     }
     bool running() const {
         return std::ranges::any_of(sessions_, [](const Session &s) { return s.view.active; });
@@ -759,7 +712,6 @@ class App {
             change |= pollAuthentication(stop);
             for (auto &session : sessions_)
                 if (session.view.active) change |= poll(session, stop);
-            change |= watchStartup();
             if (!blocked() && !launches_.empty() && !stop.stop_requested()) {
                 auto id = std::move(launches_.front());
                 launches_.pop_front();

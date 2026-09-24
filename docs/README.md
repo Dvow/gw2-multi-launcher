@@ -2,7 +2,7 @@
 
 Several Guild Wars 2 accounts. One copy of the game.
 
-Launch one account, or all of them. Launch all starts the next account only after the previous client has finished loading, so several clients are not loading at once. Each account opens in its own window. Closing the launcher leaves the game open.
+Launch one account, or all of them. Each account opens in its own window. Closing the launcher leaves the game open.
 
 <p align="center">
   <img src="account-list.png" width="280" alt="Account list">
