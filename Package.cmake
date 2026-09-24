@@ -53,6 +53,9 @@ if(WIN32)
   install(TARGETS gw2-multi-launcher ${native_targets} RUNTIME DESTINATION . LIBRARY DESTINATION .)
   install(DIRECTORY "${steam_output}/" DESTINATION steam USE_SOURCE_PERMISSIONS)
   install(FILES docs/README.md LICENSE "${notices}" DESTINATION .)
+  if(DEFINED CACHE{GW2_ISCC} AND NOT EXISTS "${GW2_ISCC}")
+    unset(GW2_ISCC CACHE)
+  endif()
   find_program(GW2_ISCC NAMES ISCC.exe ISCC HINTS
     "${CMAKE_SOURCE_DIR}/build/tools/Inno Setup 7"
     "$ENV{LOCALAPPDATA}/GW2MultiLauncher-BuildTools/Inno Setup 7"
