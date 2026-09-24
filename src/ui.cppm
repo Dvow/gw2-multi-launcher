@@ -834,7 +834,7 @@ void removeAccount(Form &form) {
 }
 void accountFields(const Account *account, App &app, Form &form, const Snapshot &state, float width,
     SDL_Window *window) {
-    form.edited |= rowField("Name", form.label, width, "Account name");
+    form.edited |= rowField("Nickname", form.label, width, "Optional");
     const char *providers[]{"ArenaNet", "Steam", "Epic"};
     float labels{};
     for (auto provider : providers)
