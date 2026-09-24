@@ -16,6 +16,7 @@ module;
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "data_folder.hpp"
 #ifdef _WIN32
 #include <windows.h>
 #include <wincrypt.h>
@@ -177,7 +178,7 @@ inline std::filesystem::path dataRoot() {
                                                        : std::filesystem::path{};
     if (root.empty()) throw std::runtime_error("Cannot find your home directory.");
 #endif
-    root /= "GW2 Multi Launcher";
+    root /= gw2ConfigFolder();
     std::filesystem::create_directories(root);
 #ifndef _WIN32
     if (chmod(root.c_str(), 0700)) throw std::runtime_error("Cannot protect the account directory.");

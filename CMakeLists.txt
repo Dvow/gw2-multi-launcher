@@ -54,13 +54,18 @@ endif()
 
 add_library(game STATIC)
 target_sources(game PUBLIC FILE_SET CXX_MODULES FILES src/game.cppm)
-add_executable(gw2-multi-launcher WIN32 src/main.cpp src/accounts.cpp src/epic.cpp src/update.cpp)
+add_executable(gw2-multi-launcher WIN32 src/main.cpp src/accounts.cpp src/epic.cpp src/update.cpp src/ui_surface.cpp)
 set_target_properties(gw2-multi-launcher PROPERTIES OUTPUT_NAME GW2MultiLauncher)
 target_sources(gw2-multi-launcher PRIVATE FILE_SET CXX_MODULES FILES
   src/platform.cppm src/accounts.cppm src/epic.cppm src/session.cppm src/update.cppm src/app.cppm src/ui.cppm)
 target_compile_definitions(gw2-multi-launcher PRIVATE GW2_APP_VERSION="${PROJECT_VERSION}")
 target_include_directories(gw2-multi-launcher PRIVATE "${CMAKE_BINARY_DIR}")
 target_link_libraries(gw2-multi-launcher PRIVATE game imgui nlohmann_json::nlohmann_json)
+
+set(gw2_app_icon "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/private/Icon.cmake")
+  include("${CMAKE_SOURCE_DIR}/private/Icon.cmake")
+endif()
 
 # Keep SteamKit dynamically replaceable, and isolate its runtime from the C++ UI.
 set(GW2_STEAM_DIR "" CACHE PATH "Pre-published Steam helper for the target operating system")
@@ -79,18 +84,26 @@ else()
     set(steam_rid linux-x64)
     set(steam_executable GW2MultiLauncher.Steam)
   endif()
+  set(steam_publish_args
+    publish "${CMAKE_SOURCE_DIR}/auth/GW2MultiLauncher.Steam.csproj"
+    -c Release -r ${steam_rid} --self-contained true --nologo
+    --artifacts-path "${CMAKE_BINARY_DIR}/auth" -o "${steam_output}")
+  set(steam_depends auth/GW2MultiLauncher.Steam.csproj auth/Program.cs auth/packages.lock.json)
+  if(WIN32 AND gw2_app_icon)
+    list(APPEND steam_publish_args "-p:ApplicationIcon=${gw2_app_icon}")
+    list(APPEND steam_depends "${gw2_app_icon}")
+  endif()
   add_custom_command(OUTPUT "${steam_output}/${steam_executable}" "${steam_output}/GW2MultiLauncher.Steam.dll"
-    COMMAND "${DOTNET_EXECUTABLE}" publish "${CMAKE_SOURCE_DIR}/auth/GW2MultiLauncher.Steam.csproj"
-      -c Release -r ${steam_rid} --self-contained true --nologo
-      --artifacts-path "${CMAKE_BINARY_DIR}/auth" -o "${steam_output}"
+    COMMAND "${DOTNET_EXECUTABLE}" ${steam_publish_args}
     COMMAND "${CMAKE_COMMAND}" -E touch "${steam_output}/${steam_executable}" "${steam_output}/GW2MultiLauncher.Steam.dll"
-    DEPENDS auth/GW2MultiLauncher.Steam.csproj auth/Program.cs auth/packages.lock.json VERBATIM)
+    DEPENDS ${steam_depends} VERBATIM)
   add_custom_target(steam-auth DEPENDS "${steam_output}/${steam_executable}")
   add_dependencies(gw2-multi-launcher steam-auth)
 endif()
 
 if(WIN32)
   enable_language(RC)
+  if(NOT gw2_app_icon)
   # Keep one source image; Windows resources and Inno Setup require an ICO wrapper.
   find_program(POWERSHELL_EXECUTABLE powershell REQUIRED)
   file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/icon.ps1" CONTENT [=[
@@ -141,7 +154,24 @@ try {
       -File "${CMAKE_BINARY_DIR}/icon.ps1"
       "${CMAKE_SOURCE_DIR}/src/icons/gw2-multi-launcher.png" "${CMAKE_BINARY_DIR}/icon.ico"
     DEPENDS src/icons/gw2-multi-launcher.png "${CMAKE_BINARY_DIR}/icon.ps1" VERBATIM)
+  endif()
   file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/icon.rc" CONTENT "1 ICON \"${CMAKE_BINARY_DIR}/icon.ico\"\n")
+  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/icon-refresh.ps1" CONTENT [=[
+param([Parameter(Mandatory = $true)][string]$Path)
+$signature = @'
+using System;
+using System.Runtime.InteropServices;
+public static class Gw2ShellNotify {
+    [DllImport("shell32.dll", EntryPoint = "SHChangeNotify", CharSet = CharSet.Unicode)]
+    public static extern void PathChanged(int eventId, uint flags, string item, System.IntPtr unused);
+    [DllImport("shell32.dll", EntryPoint = "SHChangeNotify")]
+    public static extern void Broadcast(int eventId, uint flags, System.IntPtr item, System.IntPtr unused);
+}
+'@
+if (-not ('Gw2ShellNotify' -as [type])) { Add-Type -TypeDefinition $signature }
+[Gw2ShellNotify]::PathChanged(0x2000, 0x1005, $Path, [IntPtr]::Zero)
+[Gw2ShellNotify]::Broadcast(0x08000000, 0x1000, [IntPtr]::Zero, [IntPtr]::Zero)
+]=])
   set_source_files_properties("${CMAKE_BINARY_DIR}/icon.rc" PROPERTIES OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/icon.ico")
   target_sources(gw2-multi-launcher PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
   if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -151,10 +181,25 @@ try {
   add_subdirectory(${minhook_SOURCE_DIR} ${minhook_BINARY_DIR} EXCLUDE_FROM_ALL)
   add_library(GW2MultiLauncher.Native SHARED native/Bridge.cpp)
   target_link_libraries(GW2MultiLauncher.Native PRIVATE game minhook user32 advapi32 bcrypt comctl32)
+  target_sources(GW2MultiLauncher.Native PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
   add_executable(GW2MultiLauncher.Host WIN32 native/Host.cpp)
   target_link_libraries(GW2MultiLauncher.Host PRIVATE game GW2MultiLauncher.Native user32 bcrypt)
+  target_sources(GW2MultiLauncher.Host PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
   target_link_options(GW2MultiLauncher.Host PRIVATE /ENTRY:mainCRTStartup)
   set(native_targets GW2MultiLauncher.Native GW2MultiLauncher.Host)
+  foreach(target IN ITEMS gw2-multi-launcher ${native_targets})
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_BINARY_DIR}/icon-refresh.ps1" "$<TARGET_FILE:${target}>"
+      VERBATIM)
+  endforeach()
+  if(TARGET steam-auth AND steam_executable)
+    add_custom_command(TARGET steam-auth POST_BUILD
+      COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_BINARY_DIR}/icon-refresh.ps1"
+        "${steam_output}/${steam_executable}"
+      VERBATIM)
+  endif()
   foreach(target IN ITEMS gw2-multi-launcher game ${native_targets})
     target_compile_options(${target} PRIVATE /W4 /WX /permissive- /utf-8 /guard:cf /sdl)
     target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -176,6 +221,10 @@ else()
     endif()
     configure_file("${GW2_NATIVE_DIR}/${file}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${file}" COPYONLY)
   endforeach()
+endif()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/private/CMakeLists.txt")
+  add_subdirectory(private "${CMAKE_BINARY_DIR}/gw2-private")
 endif()
 
 include(Package.cmake)

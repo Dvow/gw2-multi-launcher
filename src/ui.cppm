@@ -23,6 +23,7 @@ module;
 #include <variant>
 #include <vector>
 #include "font.hpp"
+#include "ui_surface.hpp"
 
 export module ui;
 import platform;
@@ -31,19 +32,15 @@ import app;
 import update;
 
 namespace gw2::presentation {
-constexpr ImVec4 background{0.055f, 0.067f, 0.082f, 1};
-constexpr ImVec4 accent{0.68f, 0.55f, 1, 1};
-constexpr ImVec4 primaryColor{0.44f, 0.22f, 0.86f, 1};
-constexpr ImVec4 launchColor{0.09f, 0.45f, 0.25f, 1};
-constexpr ImVec4 closeColor{0.72f, 0.17f, 0.28f, 1};
-constexpr ImVec4 muted{0.54f, 0.59f, 0.65f, 1};
-constexpr ImVec4 errorColor{1, 0.55f, 0.48f, 1};
+const surface::Palette &ink() { return surface::active().palette; }
 constexpr float iconSize = 28, iconSpacing = 4, headerHeight = 42;
 ImRect headerButton(int index, float width, float scale) {
-    const ImVec2 pos{
-        width - (14 + 3 * iconSize + 2 * iconSpacing) * scale + index * (iconSize + iconSpacing) * scale,
+    const auto margin = ImGui::GetStyle().WindowPadding.x;
+    const auto button = iconSize * scale;
+    const auto gap = iconSpacing * scale;
+    const ImVec2 pos{width - margin - 3 * button - 2 * gap + index * (button + gap),
         (headerHeight - iconSize) * scale / 2};
-    return {pos, {pos.x + iconSize * scale, pos.y + iconSize * scale}};
+    return {pos, {pos.x + button, pos.y + button}};
 }
 template <std::size_t N> void assign(std::array<char, N> &out, std::string_view text) {
     const auto size = std::min(N - 1, text.size());
@@ -51,9 +48,18 @@ template <std::size_t N> void assign(std::array<char, N> &out, std::string_view 
     out[size] = 0;
 }
 void mutedText(const char *text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, muted);
+    ImGui::PushStyleColor(ImGuiCol_Text, ink().muted);
     ImGui::TextUnformatted(text);
     ImGui::PopStyleColor();
+}
+void centeredText(const char *text, bool muted = false) {
+    const auto avail = ImGui::GetContentRegionAvail().x;
+    const auto width = ImGui::CalcTextSize(text).x;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail - width) * 0.5f));
+    if (muted)
+        mutedText(text);
+    else
+        ImGui::TextUnformatted(text);
 }
 void help(const char *text) {
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_NoSharedDelay |
@@ -177,9 +183,9 @@ void drawIcon(Icon icon, ImVec2 origin, ImU32 color, float scale) {
 }
 bool iconButton(Icon icon, const char *label, bool primary = false) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
-    auto color = primary ? primaryColor : ImVec4{};
-    if (icon == Icon::play || icon == Icon::playAll) color = launchColor;
-    if (icon == Icon::close || icon == Icon::closeAll || icon == Icon::remove) color = closeColor;
+    auto color = primary ? ink().primary : ImVec4{};
+    if (icon == Icon::play || icon == Icon::playAll) color = ink().launch;
+    if (icon == Icon::close || icon == Icon::closeAll || icon == Icon::remove) color = ink().close;
     ImGui::PushID(label);
     const bool pressed = button("##action", iconSize * scale, color);
     ImGui::PopID();
@@ -191,7 +197,7 @@ bool iconButton(Icon icon, const char *label, bool primary = false) {
 void pulseOutline(double since) {
     if (since < 0) return;
     const auto scale = ImGui::GetStyle().FontScaleDpi;
-    auto color = accent;
+    auto color = ink().accent;
     color.w = 0.8f * static_cast<float>(0.5 - 0.5 * std::cos(
         (ImGui::GetTime() - since) * 3.141592653589793));
     const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
@@ -397,7 +403,11 @@ struct Form {
             return;
         }
         if (pendingAction == Action::edit && snapshot.editId == id) assign(email, snapshot.editEmail);
-        if (pendingAction == Action::save) clearPassword();
+        if (pendingAction == Action::save) {
+            clearPassword();
+            const auto saved = std::ranges::find(snapshot.catalog.accounts, id, &Account::id);
+            if (saved != snapshot.catalog.accounts.end()) assign(label, saved->label);
+        }
         if ((pendingAction == Action::save && id.empty()) || pendingAction == Action::remove) close();
     }
     bool isSelected(const std::string &account) const {
@@ -569,11 +579,9 @@ SDL_HitTestResult SDLCALL hitTest(SDL_Window *window, const SDL_Point *point, vo
         if (headerButton(i, static_cast<float>(w), scale).Contains(position)) return SDL_HITTEST_NORMAL;
     return SDL_HITTEST_DRAGGABLE;
 }
-void style(float scale) {
-    auto &s = ImGui::GetStyle();
-    s = ImGuiStyle{};
+void publicStyle(ImGuiStyle &s) {
     ImGui::StyleColorsDark();
-    s.WindowPadding = {14, 10};
+    s.WindowPadding = {8, 10};
     s.FramePadding = {9, 6};
     s.ItemSpacing = {8, 8};
     s.ItemInnerSpacing = {6, 4};
@@ -586,7 +594,7 @@ void style(float scale) {
     s.GrabMinSize = 18;
     s.WindowBorderSize = 1;
     s.HoverDelayShort = 0.3f;
-    s.Colors[ImGuiCol_WindowBg] = background;
+    s.Colors[ImGuiCol_WindowBg] = ink().background;
     s.Colors[ImGuiCol_PopupBg] = {0.078f, 0.094f, 0.114f, 1};
     s.Colors[ImGuiCol_Border] = {0.16f, 0.19f, 0.22f, 1};
     s.Colors[ImGuiCol_FrameBg] = {0.095f, 0.114f, 0.137f, 1};
@@ -595,26 +603,37 @@ void style(float scale) {
     s.Colors[ImGuiCol_FrameBgHovered] = {0.13f, 0.16f, 0.19f, 1};
     s.Colors[ImGuiCol_FrameBgActive] = {0.14f, 0.18f, 0.21f, 1};
     s.Colors[ImGuiCol_Text] = {0.90f, 0.93f, 0.95f, 1};
-    s.Colors[ImGuiCol_TextDisabled] = muted;
+    s.Colors[ImGuiCol_TextDisabled] = ink().muted;
     s.Colors[ImGuiCol_Button] = {0.12f, 0.15f, 0.18f, 1};
     s.Colors[ImGuiCol_ButtonHovered] = {0.19f, 0.24f, 0.28f, 1};
     s.Colors[ImGuiCol_ButtonActive] = {0.23f, 0.29f, 0.32f, 1};
     s.Colors[ImGuiCol_Header] = {0.16f, 0.12f, 0.22f, 1};
     s.Colors[ImGuiCol_HeaderHovered] = {0.21f, 0.16f, 0.29f, 1};
-    s.Colors[ImGuiCol_HeaderActive] = primaryColor;
-    s.Colors[ImGuiCol_CheckMark] = accent;
+    s.Colors[ImGuiCol_HeaderActive] = ink().primary;
+    s.Colors[ImGuiCol_CheckMark] = ink().accent;
     s.Colors[ImGuiCol_CheckboxSelectedBg] = s.Colors[ImGuiCol_FrameBgHovered];
     s.Colors[ImGuiCol_Separator] = s.Colors[ImGuiCol_Border];
-    s.Colors[ImGuiCol_SeparatorHovered] = s.Colors[ImGuiCol_SeparatorActive] = accent;
+    s.Colors[ImGuiCol_SeparatorHovered] = s.Colors[ImGuiCol_SeparatorActive] = ink().accent;
     s.Colors[ImGuiCol_ResizeGrip] = s.Colors[ImGuiCol_Border];
-    s.Colors[ImGuiCol_ResizeGripHovered] = s.Colors[ImGuiCol_ResizeGripActive] = accent;
-    s.Colors[ImGuiCol_SliderGrab] = primaryColor;
-    s.Colors[ImGuiCol_SliderGrabActive] = s.Colors[ImGuiCol_NavCursor] = accent;
-    s.Colors[ImGuiCol_TextSelectedBg] = {accent.x, accent.y, accent.z, 0.35f};
+    s.Colors[ImGuiCol_ResizeGripHovered] = s.Colors[ImGuiCol_ResizeGripActive] = ink().accent;
+    s.Colors[ImGuiCol_SliderGrab] = ink().primary;
+    s.Colors[ImGuiCol_SliderGrabActive] = s.Colors[ImGuiCol_NavCursor] = ink().accent;
+    s.Colors[ImGuiCol_TextSelectedBg] = {ink().accent.x, ink().accent.y, ink().accent.z, 0.35f};
     s.Colors[ImGuiCol_ScrollbarBg] = {0, 0, 0, 0};
     s.Colors[ImGuiCol_ScrollbarGrab] = {0.24f, 0.29f, 0.32f, 1};
-    s.Colors[ImGuiCol_ScrollbarGrabHovered] = accent;
-    s.Colors[ImGuiCol_ScrollbarGrabActive] = primaryColor;
+    s.Colors[ImGuiCol_ScrollbarGrabHovered] = ink().accent;
+    s.Colors[ImGuiCol_ScrollbarGrabActive] = ink().primary;
+}
+void style(float scale) {
+    auto &s = ImGui::GetStyle();
+    if (const auto apply = surface::active().style) {
+        apply(s);
+        s.WindowRounding = 0;
+        s.HoverDelayShort = 0.3f;
+    } else {
+        s = ImGuiStyle{};
+        publicStyle(s);
+    }
     s.ScaleAllSizes(scale);
     s.FontScaleDpi = scale;
 }
@@ -728,7 +747,7 @@ void platformFields(Form &form, const Snapshot::Authentication &auth, float widt
     }
     if (form.provider == Provider::epic) {
         if (button(matching && !auth.identity.empty() ? "Reconnect Epic" : "Sign in to Epic", 0,
-                primaryColor))
+                ink().primary))
             form.request({.action = Action::connect, .id = form.id, .provider = Provider::epic});
         return;
     }
@@ -738,7 +757,7 @@ void platformFields(Form &form, const Snapshot::Authentication &auth, float widt
             ImGuiInputTextFlags_Password | ImGuiInputTextFlags_NoUndoRedo);
     }
     if (button(
-            matching && !auth.identity.empty() ? "Reconnect Steam" : "Sign in to Steam", 0, primaryColor)) {
+            matching && !auth.identity.empty() ? "Reconnect Steam" : "Sign in to Steam", 0, ink().primary)) {
         Command command{.action = Action::connect, .id = form.id, .provider = form.provider};
         if (form.steamPassword) {
             command.email = form.email.data();
@@ -826,7 +845,7 @@ void accountFields(const Account *account, App &app, Form &form, const Snapshot 
     for (int i = 0; i < 3; ++i) {
         if (i) ImGui::SameLine();
         if (!button(providers[i], ImGui::CalcTextSize(providers[i]).x + padding,
-                static_cast<int>(form.provider) == i ? primaryColor : ImVec4{}) ||
+                static_cast<int>(form.provider) == i ? ink().primary : ImVec4{}) ||
             static_cast<int>(form.provider) == i)
             continue;
         form.request({.action = Action::cancelConnect});
@@ -913,7 +932,7 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
                                     : ImVec4{20 / 255.f, 24 / 255.f, 29 / 255.f, 1}),
         7 * scale);
     if (selected || floating)
-        draw->AddRect(row, {row.x + width, row.y + total}, ImGui::GetColorU32(accent), 7 * scale);
+        draw->AddRect(row, {row.x + width, row.y + total}, ImGui::GetColorU32(ink().accent), 7 * scale);
     const ImVec2 pos{row.x + inset, row.y + 8 * scale};
     const auto available = width - 2 * inset;
     const auto textWidth = available - (account ? 72 : 36) * scale;
@@ -931,7 +950,7 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         : error                  ? "Needs attention"
                                  : session.status.c_str();
     const auto statusWidth = std::min(ImGui::CalcTextSize(status).x, textWidth - pidWidth);
-    ImGui::PushStyleColor(ImGuiCol_Text, error ? errorColor : session.active ? accent : muted);
+    ImGui::PushStyleColor(ImGuiCol_Text, error ? ink().error : session.active ? ink().accent : ink().muted);
     clippedText(status, statusWidth);
     ImGui::PopStyleColor();
     if (error) help(session.status.c_str());
@@ -1085,13 +1104,20 @@ void accountList(App &app, Form &form, const Snapshot &state, SDL_Window *native
     }
 }
 
+void shortcuts(Form &form, bool busy) {
+    if (busy) return;
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N)) form.go(Form::Page::account);
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Comma)) form.go(Form::Page::settings);
+    if (form.page != Form::Page::accounts && ImGui::IsKeyPressed(ImGuiKey_Escape))
+        form.go(Form::Page::accounts);
+}
 void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const auto width = ImGui::GetWindowWidth();
     ImGui::SetCursorPos({14 * scale, (headerHeight * scale - ImGui::GetTextLineHeight()) / 2});
-    ImGui::TextUnformatted("GW2");
+    ImGui::TextUnformatted(surface::active().brand);
     ImGui::SameLine();
-    mutedText("Multi");
+    mutedText(surface::active().brandRest);
     ImGui::SetCursorPos(headerButton(0, width, scale).Min);
     ImGui::BeginDisabled(busy);
     if (iconButton(form.page != Form::Page::settings ? Icon::settings : Icon::back,
@@ -1105,7 +1131,7 @@ void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
         const auto edge = ImGui::GetItemRectMax();
         ImGui::GetWindowDrawList()->AddCircleFilled(
             {edge.x - 4 * scale, ImGui::GetItemRectMin().y + 4 * scale}, 3 * scale,
-            ImGui::GetColorU32(accent));
+            ImGui::GetColorU32(ink().accent));
     }
     ImGui::EndDisabled();
     ImGui::SetCursorPos(headerButton(1, width, scale).Min);
@@ -1115,10 +1141,6 @@ void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
     ImGui::SetCursorPos({14 * scale, headerHeight * scale});
     ImGui::Separator();
     ImGui::SetCursorPos({14 * scale, (headerHeight + 8) * scale});
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N) && !busy) form.go(Form::Page::account);
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Comma) && !busy) form.go(Form::Page::settings);
-    if (form.page != Form::Page::accounts && ImGui::IsKeyPressed(ImGuiKey_Escape) && !busy)
-        form.go(Form::Page::accounts);
 }
 void toolbar(Form &form, const Snapshot &state, bool busy) {
     if (form.page == Form::Page::settings) {
@@ -1203,7 +1225,7 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
         : update.stage == UpdateStage::installing            ? "Updating…"
         : available                                          ? "Update now"
                                                              : "Check for updates";
-    if (button(label, 0, available ? primaryColor : ImVec4{}))
+    if (button(label, 0, available ? ink().primary : ImVec4{}))
         form.request({.action = available ? Action::installUpdate : Action::checkUpdate});
     ImGui::EndDisabled();
     if (available) ImGui::TextDisabled("Version %s available", update.version.c_str());
@@ -1229,7 +1251,7 @@ void updatePrompt(Form &form, const Snapshot &state, bool busy) {
     const bool running = std::ranges::any_of(state.sessions, &SessionView::active);
     if (running) ImGui::TextWrapped("Close your games before updating.");
     ImGui::BeginDisabled(busy || state.auth.busy || running);
-    if (button("Update now", 0, primaryColor)) {
+    if (button("Update now", 0, ink().primary)) {
         form.openSettings(state.catalog);
         form.request({.action = Action::installUpdate});
         ImGui::CloseCurrentPopup();
@@ -1264,11 +1286,17 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     ImGui::Begin("GW2 Multi Launcher", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollWithMouse);
-    header(form, window, busy, state.update.stage == UpdateStage::available);
+    surface::paint(surface::Insert::beforeHeader);
+    if (surface::shown(surface::Part::header))
+        header(form, window, busy, state.update.stage == UpdateStage::available);
+    surface::paint(surface::Insert::afterHeader);
+    shortcuts(form, busy);
     const auto &message = form.localError.empty() ? state.error.message : form.localError;
     const auto page = form.page;
     const bool accounts = page != Form::Page::settings;
-    toolbar(form, state, busy);
+    surface::paint(surface::Insert::beforeToolbar);
+    if (surface::shown(surface::Part::toolbar)) toolbar(form, state, busy);
+    surface::paint(surface::Insert::afterToolbar);
 
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * form.opacity());
     // Each page owns its scroll position; navigation never reuses another form's scroll offset.
@@ -1278,38 +1306,41 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
         form.scrollToNew = false;
     }
     ImGui::BeginChild("page");
-    if (!message.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, errorColor);
+    surface::paint(surface::Insert::beforePage);
+    if (!message.empty() && surface::shown(surface::Part::error)) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ink().error);
         ImGui::TextWrapped("%s", message.c_str());
         ImGui::PopStyleColor();
         ImGui::Spacing();
     }
     if (!state.ready) {
-        mutedText(state.fatal ? "Your saved accounts have not been changed." : "Opening accounts…");
+        if (surface::shown(surface::Part::loading))
+            mutedText(state.fatal ? "Your saved accounts have not been changed." : "Opening accounts…");
     } else if (accounts) {
         if (const auto update = state.session(""); update && update->active) {
             mutedText(update->status.c_str());
             ImGui::Spacing();
         }
-        if (state.catalog.accounts.empty() && form.page != Form::Page::account) {
+        if (surface::shown(surface::Part::emptyState) && state.catalog.accounts.empty() &&
+            form.page != Form::Page::account) {
             ImGui::Dummy({0, 20 * scale});
-            ImGui::PushTextWrapPos(0);
-            ImGui::TextUnformatted("Your accounts, one click away.");
-            mutedText("Click the + button to add your first account.");
-            ImGui::PopTextWrapPos();
+            centeredText("Your accounts, one click away.");
+            centeredText("Click the + button to add your first account.", true);
         }
-        if (form.page == Form::Page::account && form.id.empty())
+        if (surface::shown(surface::Part::accounts) && form.page == Form::Page::account && form.id.empty())
             accountRow(nullptr, app, form, state, window, accountLayout(nullptr, form, state));
-        accountList(app, form, state, window, busy);
+        if (surface::shown(surface::Part::accounts)) accountList(app, form, state, window, busy);
     } else {
         ImGui::BeginDisabled(busy || form.page != page);
-        settingsPage(form, state, window);
+        if (surface::shown(surface::Part::settings)) settingsPage(form, state, window);
         ImGui::EndDisabled();
+        surface::paint(surface::Insert::settingsTail);
     }
+    surface::paint(surface::Insert::afterPage);
     ImGui::EndChild();
     ImGui::PopID();
     ImGui::PopStyleVar();
-    updatePrompt(form, state, busy);
+    if (surface::shown(surface::Part::updatePrompt)) updatePrompt(form, state, busy);
     // Consume this frame's input before saving or acting on a navigation request.
     form.finish(app, state, open);
     ImGui::End();
@@ -1336,7 +1367,7 @@ void drawFrame(
     int width{}, height{};
     SDL_GetWindowSizeInPixels(window, &width, &height);
     glViewport(0, 0, width, height);
-    glClearColor(background.x, background.y, background.z, background.w);
+    glClearColor(ink().background.x, ink().background.y, ink().background.z, ink().background.w);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     ImGui::UpdatePlatformWindows();
@@ -1486,6 +1517,7 @@ int run() {
             ImGui::DestroyContext();
         }
     } gui;
+    surface::install();
     setupFonts(scale);
     if (!(gui.platform = ImGui_ImplSDL3_InitForOpenGL(window.get(), context)) ||
         !(gui.renderer = ImGui_ImplOpenGL3_Init("#version 130")))

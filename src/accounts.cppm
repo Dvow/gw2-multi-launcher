@@ -357,17 +357,23 @@ class Store {
         email = trim(email);
         args = trim(args);
         (void)options(args);
-        auto name = utf16(label);
-        if (label.empty() || name.bytes.size() / 2 > 81)
-            throw std::runtime_error("Use an account name of 1–80 characters.");
-        if (std::ranges::any_of(label, [](unsigned char c) { return c < 32 || c == 127; }))
+        if (!label.empty() && std::ranges::any_of(label, [](unsigned char c) { return c < 32 || c == 127; }))
             throw std::runtime_error("Use a single-line account name.");
+        auto name = utf16(label);
+        if (!label.empty() && name.bytes.size() / 2 > 81)
+            throw std::runtime_error("Use an account name of 1–80 characters.");
         if (id.empty() && catalog_.accounts.size() >= 100)
             throw std::runtime_error("The account limit is 100.");
         Account updated{id.empty() ? identifier() : id, std::move(label), {}, std::move(args), provider};
         updated.dlls = std::move(dlls);
         validateDlls(updated.dlls);
         auto record = accountRecord(updated, id, email, std::move(replacement), std::move(session), stop);
+        if (updated.label.empty())
+            updated.label = trim(updated.provider == Provider::arenaNet ? email : updated.username);
+        if (updated.label.empty() || updated.label.size() > 320)
+            throw std::runtime_error("Use an account name of 1–80 characters.");
+        if (std::ranges::any_of(updated.label, [](unsigned char c) { return c < 32 || c == 127; }))
+            throw std::runtime_error("Use a single-line account name.");
         auto encrypted = crypt(record.bytes, true, catalog_.accounts.empty(), stop);
         updated.protectedCredentials = base64(encrypted.bytes);
         auto next = catalog_;

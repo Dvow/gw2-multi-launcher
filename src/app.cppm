@@ -282,8 +282,6 @@ class App {
         // draft session until the catalog has actually been committed.
         Secret candidate;
         candidate.bytes.assign(connectedSession_.bytes.begin(), connectedSession_.bytes.end());
-        if (command.provider != Provider::arenaNet && trim(command.label).empty())
-            command.label = state_.auth.username;
         const auto id = command.id;
         store_->put(std::move(command.id), std::move(command.label), std::move(command.email),
             std::move(command.arguments), std::move(command.dlls), std::move(command.password), stop,
