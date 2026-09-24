@@ -78,6 +78,7 @@ bool button(const char *text, float width = 0, ImVec4 color = {}) {
 enum class Icon {
     add,
     play,
+    playAll,
     closeAll,
     edit,
     collapse,
@@ -110,6 +111,10 @@ void drawIcon(Icon icon, ImVec2 origin, ImU32 color, float scale) {
         break;
     case Icon::play:
         draw->AddTriangleFilled(point({4, 2}), point({14, 8}), point({4, 14}), color);
+        break;
+    case Icon::playAll:
+        draw->AddTriangleFilled(point({1, 3}), point({8, 8}), point({1, 13}), color);
+        draw->AddTriangleFilled(point({8, 3}), point({15, 8}), point({8, 13}), color);
         break;
     case Icon::closeAll:
         stroke({{1, 11}, {1, 1}, {11, 1}});
@@ -173,7 +178,7 @@ void drawIcon(Icon icon, ImVec2 origin, ImU32 color, float scale) {
 bool iconButton(Icon icon, const char *label, bool primary = false) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     auto color = primary ? primaryColor : ImVec4{};
-    if (icon == Icon::play) color = launchColor;
+    if (icon == Icon::play || icon == Icon::playAll) color = launchColor;
     if (icon == Icon::close || icon == Icon::closeAll || icon == Icon::remove) color = closeColor;
     ImGui::PushID(label);
     const bool pressed = button("##action", iconSize * scale, color);
@@ -1112,7 +1117,7 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
     const bool editingRequested = page == Form::Page::account && !form.id.empty() &&
         (form.selected.empty() || form.isSelected(form.id));
     ImGui::BeginDisabled(state.catalog.accounts.empty() || editingRequested);
-    if (iconButton(Icon::play, form.selected.empty() ? "Launch all" : "Launch selected"))
+    if (iconButton(Icon::playAll, form.selected.empty() ? "Launch all" : "Launch selected"))
         form.launch(state.catalog);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
