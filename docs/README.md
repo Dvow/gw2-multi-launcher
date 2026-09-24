@@ -33,6 +33,9 @@ launcher checks for GW2 updates. If no GW2 clients are running, it installs any
 required update automatically, then launches your account. If an update is needed
 while GW2 is running, close all GW2 windows and launch again.
 
+Enable **Always on top** in Settings to keep the launcher above other windows.
+The setting applies immediately and is remembered between sessions.
+
 To load DLLs at startup, use the **DLLs** folder button in Settings or an account's
 editor. DLLs selected in Settings load first, followed by that account's DLLs;
 duplicate files load once. Click a file's tag to replace it or its cross to remove

@@ -24,7 +24,8 @@ void Store::save(Catalog next) {
             {"Provider", static_cast<int>(a.provider)}, {"Identity", a.identity}, {"Username", a.username},
             {"Dlls", a.dlls}});
     nlohmann::json json{{"Version", 3}, {"GamePath", next.gamePath}, {"Accounts", accounts},
-        {"HideLogin", next.hideLogin}, {"ShowPid", next.showPid}, {"Arguments", next.arguments},
+        {"HideLogin", next.hideLogin}, {"ShowPid", next.showPid}, {"AlwaysOnTop", next.alwaysOnTop},
+        {"Arguments", next.arguments},
         {"Runner", next.runner}, {"Prefix", next.prefix}, {"Proton", next.proton},
         {"UpdatePending", next.updatePending}, {"AutoUpdate", next.autoUpdate}, {"Dlls", next.dlls}};
     json["Window"] = {{"Width", next.window.width}, {"Height", next.window.height}, {"X", next.window.x},
@@ -49,6 +50,7 @@ Store::Store() {
         catalog_.dlls = json.value("Dlls", std::vector<std::string>{});
         catalog_.hideLogin = json.value("HideLogin", true);
         catalog_.showPid = json.value("ShowPid", false);
+        catalog_.alwaysOnTop = json.value("AlwaysOnTop", false);
         catalog_.runner = json.value("Runner", "wine");
         catalog_.updatePending = json.value("UpdatePending", false);
         catalog_.autoUpdate = json.value("AutoUpdate", true);

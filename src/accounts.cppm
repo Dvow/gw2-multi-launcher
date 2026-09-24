@@ -32,7 +32,7 @@ struct WindowState {
 };
 struct Catalog {
     std::string gamePath, arguments, runner{"wine"}, prefix, proton;
-    bool hideLogin{true}, showPid{}, updatePending{}, autoUpdate{true};
+    bool hideLogin{true}, showPid{}, updatePending{}, autoUpdate{true}, alwaysOnTop{};
     WindowState window;
     std::vector<Account> accounts;
     std::vector<std::string> dlls;

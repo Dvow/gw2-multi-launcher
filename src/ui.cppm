@@ -281,7 +281,7 @@ struct Form {
     std::array<char, 2049> args{};
     std::vector<std::string> dlls;
     std::array<char, 32761> game{}, runner{}, prefix{}, proton{};
-    bool hide{}, showPid{}, autoUpdate{true}, removing{}, loading{}, edited{}, connected{};
+    bool hide{}, showPid{}, alwaysOnTop{}, autoUpdate{true}, removing{}, loading{}, edited{}, connected{};
     std::uint64_t pending{};
     Action pendingAction{};
     std::shared_ptr<Picker> picker;
@@ -339,6 +339,7 @@ struct Form {
         assign(proton, c.proton);
         hide = c.hideLogin;
         showPid = c.showPid;
+        alwaysOnTop = c.alwaysOnTop;
         autoUpdate = c.autoUpdate;
     }
     void openAccount(const Account *account, App &app) {
@@ -425,6 +426,7 @@ struct Form {
             c.settings.dlls = dlls;
             c.settings.hideLogin = hide;
             c.settings.showPid = showPid;
+            c.settings.alwaysOnTop = alwaysOnTop;
             c.settings.autoUpdate = autoUpdate;
             c.settings.runner = runner.data();
             c.settings.prefix = prefix.data();
@@ -1178,6 +1180,8 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     form.edited |= ImGui::Checkbox("Hide sign-in window", &form.hide);
     help("Hide the GW2 sign-in window unless it needs your attention.");
     form.edited |= ImGui::Checkbox("Show PID", &form.showPid);
+    form.edited |= ImGui::Checkbox("Always on top", &form.alwaysOnTop);
+    help("Keep the launcher above other windows.");
 #ifndef _WIN32
     ImGui::Spacing();
     ImGui::SeparatorText("Wine / Proton");
@@ -1496,6 +1500,11 @@ int run() {
         if (!pollEvents(app, form, window.get(), context)) form.go(Form::Page::exit);
         const auto snapshot = app.snapshot();
         if (snapshot != previous) {
+            if (snapshot->ready && (!previous || !previous->ready ||
+                    snapshot->catalog.alwaysOnTop != previous->catalog.alwaysOnTop)) {
+                if (!SDL_SetWindowAlwaysOnTop(window.get(), snapshot->catalog.alwaysOnTop))
+                    form.localError = "Could not apply Always on top: " + std::string(SDL_GetError());
+            }
             for (const auto &session : snapshot->sessions) {
                 if (!session.active || session.state != 12) continue;
                 const auto old = previous ? previous->session(session.id) : nullptr;
