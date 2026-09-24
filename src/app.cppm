@@ -62,11 +62,12 @@ struct SessionView {
     std::string id, status;
     std::string email{};
     unsigned state{}, pid{}, verification{};
-    bool active{}, canShow{};
-    bool needsVerification() const { return active && (state == 12 || state == 13); }
-    bool canClose() const { return active && (state == 4 || needsVerification()) && !id.empty(); }
+    bool active{}, canShow{}, closing{};
+    bool needsVerification() const { return active && !closing && (state == 12 || state == 13); }
+    bool canClose() const { return active && !closing && !id.empty(); }
     bool blocking() const {
-        return active && (id.empty() || state < 4 || state == 9 || state == 10 || state == 11 || needsVerification());
+        return active && (closing || id.empty() || state < 4 || state == 9 || state == 10 ||
+            state == 11 || needsVerification());
     }
 };
 struct Snapshot {
@@ -81,7 +82,7 @@ struct Snapshot {
     std::vector<SessionView> sessions;
     std::string error, editId, editEmail;
     std::uint64_t completed{};
-    bool ready{}, busy{}, fatal{};
+    bool ready{}, busy{}, fatal{}, launchesQueued{};
     const SessionView *session(std::string_view id) const {
         const auto found = std::ranges::find(sessions, id, &SessionView::id);
         return found == sessions.end() ? nullptr : &*found;
@@ -89,7 +90,7 @@ struct Snapshot {
 };
 
 class App {
-    static constexpr std::uint32_t magic = 0x364C4D47;
+    static constexpr std::uint32_t magic = 0x374C4D47;
     struct Session {
         SessionView view;
         std::unique_ptr<Process> process;
@@ -97,7 +98,7 @@ class App {
         std::size_t written{}, received{};
         std::array<unsigned char, 12> record{};
         std::uint64_t deadline{};
-        bool show{}, failed{}, closeRequested{};
+        bool show{}, failed{}, closeSent{};
     };
     std::mutex mutex_;
     std::condition_variable_any changed_;
@@ -122,6 +123,7 @@ class App {
         state_.sessions.clear();
         for (const auto &s : sessions_)
             state_.sessions.push_back(s.view);
+        state_.launchesQueued = !launches_.empty();
         state_.busy = !launches_.empty() || blocked() || state_.update.stage == UpdateStage::installing ||
             state_.update.stage == UpdateStage::installed;
         if (store_) state_.catalog = store_->catalog();
@@ -171,7 +173,7 @@ class App {
         case 1007:
             return "GW2's platform connection could not be prepared. Close the game and try again.";
         case 1008:
-            return "GW2 could not receive the close request. Select Show and close its window.";
+            return "Could not terminate this GW2 process. Try Close again or end it in Task Manager.";
         case 258:
             return "GW2 timed out. Select Show to check its window.";
         case 1103:
@@ -309,28 +311,26 @@ class App {
         prepare(stop);
     }
     void setupAccount(Command &command, std::stop_token stop) {
-        const bool cancel = command.action == Action::cancelSetup;
-        if (!cancel && !validDisplayName(command.label))
+        if (!validDisplayName(command.label))
             throw std::runtime_error("Use 3–27 letters and single spaces for your GW2 display name.");
-        auto found = std::ranges::find_if(sessions_,
-            [&](const Session &s) { return s.view.id == command.id && s.view.active && s.view.state == 9; });
+        auto found = std::ranges::find_if(sessions_, [&](const Session &s) {
+            return s.view.id == command.id && s.view.active && !s.view.closing && s.view.state == 9;
+        });
         if (found == sessions_.end() || !found->outgoing.bytes.empty() ||
             store_->account(command.id).provider == Provider::arenaNet)
             throw std::runtime_error("This account is not waiting for a GW2 display name.");
         Secret retry;
         const bool epic = store_->account(command.id).provider == Provider::epic;
-        if (!cancel && epic) retry = epicCredentials(command.id, command.label, stop);
+        if (epic) retry = epicCredentials(command.id, command.label, stop);
         auto &bytes = found->outgoing.bytes;
         bytes.reserve(1 + retry.bytes.size() + command.label.size() + 4);
-        bytes.push_back(cancel ? 4 : 3);
-        if (cancel)
-            launches_.clear();
-        else if (epic)
+        bytes.push_back(3);
+        if (epic)
             bytes.insert(bytes.end(), retry.bytes.begin(), retry.bytes.end());
         else
             textField(bytes, command.label);
         found->view.state = 2;
-        found->view.status = cancel ? "Cancelling…" : "Creating GW2 account…";
+        found->view.status = "Creating GW2 account…";
         found->deadline = SDL_GetTicks() + 130000;
     }
     void connectSteam(Command &command) {
@@ -354,7 +354,7 @@ class App {
     void verify(Command &command) {
         auto found = std::ranges::find_if(sessions_, [&](const Session &s) {
             return s.view.id == command.id && s.view.active && s.view.state == 12 &&
-                s.view.pid == command.pid && !s.closeRequested;
+                s.view.pid == command.pid && !s.view.closing;
         });
         if (found == sessions_.end() || !found->outgoing.bytes.empty())
             throw std::runtime_error("This verification request has ended. Check the account's status.");
@@ -376,9 +376,12 @@ class App {
         found->deadline = SDL_GetTicks() + 130000;
     }
     void closeSession(Session &session) {
-        if (!session.view.canClose() || !session.outgoing.bytes.empty()) return;
-        session.outgoing.bytes.push_back(5);
-        session.closeRequested = true;
+        if (!session.view.canClose()) return;
+        if (state_.error == session.view.status) state_.error.clear();
+        session.view.closing = true;
+        session.view.canShow = false;
+        session.view.status = "Terminating…";
+        session.closeSent = false;
         session.show = false;
     }
     void connectEpic(Command &command, std::stop_token stop) {
@@ -424,16 +427,22 @@ class App {
             break;
         case Action::show:
             for (auto &session : sessions_)
-                if (session.view.id == command.id && session.view.active) session.show = true;
+                if (session.view.id == command.id && session.view.active && !session.view.closing)
+                    session.show = true;
             break;
         case Action::close:
         case Action::closeAll:
+        case Action::cancelSetup:
+            if (command.action != Action::close)
+                launches_.clear();
+            else
+                std::erase(launches_, command.id);
             for (auto &session : sessions_)
-                if (command.action == Action::closeAll || session.view.id == command.id)
+                if (command.action == Action::closeAll || (session.view.id == command.id &&
+                        (!command.pid || session.view.pid == command.pid)))
                     closeSession(session);
             break;
         case Action::displayName:
-        case Action::cancelSetup:
             setupAccount(command, stop);
             break;
         case Action::cancelConnect:
@@ -461,12 +470,16 @@ class App {
         }
     }
     void execute(Command command, std::stop_token stop) {
-        state_.error.clear();
-        state_.editId.clear();
-        state_.editEmail.clear();
+        if (command.action != Action::close && command.action != Action::closeAll &&
+            command.action != Action::cancelSetup) {
+            state_.error.clear();
+            state_.editId.clear();
+            state_.editEmail.clear();
+        }
         try {
             if (command.action != Action::show && command.action != Action::close &&
-                command.action != Action::guard && command.action != Action::verify && command.action != Action::cancelConnect &&
+                command.action != Action::closeAll && command.action != Action::guard &&
+                command.action != Action::verify && command.action != Action::cancelConnect &&
                 command.action != Action::displayName && command.action != Action::cancelSetup &&
                 command.action != Action::checkUpdate && state_.busy)
                 throw std::runtime_error("Wait for the current launch or update to finish.");
@@ -568,6 +581,16 @@ class App {
         if ((state == 12 || state == 13) && detail != 1 && detail != 2 && detail != 4 && detail != 5 && detail != 6)
             throw std::runtime_error("Unknown GW2 verification request. Select Show to check the game.");
         if (state == 1) session.view.pid = detail;
+        const bool closing = session.view.closing;
+        if (closing) {
+            if (state == 5)
+                session.failed = false;
+            else if (state == 6 && detail == 1008) {
+                session.view.closing = false;
+                session.closeSent = false;
+            } else
+                return; // Native work interrupted by Kill can report a stale login/load error.
+        }
         if (state == 5 || state == 8) session.view.pid = 0;
         session.view.state = session.failed && state != 5 ? 6 : state;
         session.view.verification = state == 12 || state == 13 ? detail : 0;
@@ -588,6 +611,7 @@ class App {
         if (state == 1 || state == 2 || state == 3 || state == 4 || state == 7 || state == 10 || state >= 11)
             session.view.canShow = true;
         if (state == 9) session.view.canShow = false;
+        if (state == 6) session.view.canShow = session.view.pid != 0;
         session.deadline = SDL_GetTicks() + (state == 2 || state == 13 ? 130000 : 100000);
         if (state == 8) {
             const Image image(path(store_->catalog().gamePath));
@@ -597,41 +621,75 @@ class App {
             store_->updatePending(false);
         }
         if (state == 5 || state == 8) {
-            if (state == 5 && !session.failed && !session.closeRequested && !launches_.empty())
+            if (state == 5 && !session.failed && !closing && !launches_.empty())
                 throw std::runtime_error("A client exited before all accounts finished launching.");
-            session.view.active = session.view.canShow = false;
+            session.view.active = session.view.canShow = session.view.closing = false;
             session.process.reset();
+            session.outgoing.clear();
         }
+    }
+    bool readStatus(Session &session) {
+        bool changed{};
+        for (unsigned i = 0; i < 16 && session.view.active; ++i) {
+            const auto count = session.process->read(std::span(session.record).subspan(session.received));
+            if (!count) break;
+            session.received += count;
+            if (session.received == session.record.size()) {
+                receiveStatus(session);
+                changed = true;
+            }
+        }
+        return changed;
     }
     bool poll(Session &session, std::stop_token stop) {
         bool changed{};
         try {
+            // Observe an already-exited client before writing another control byte.
+            changed = readStatus(session);
+            if (!session.view.active) return true;
             if (!session.outgoing.bytes.empty()) {
                 session.process->write(session.outgoing, session.written);
+            } else if (session.view.closing && !session.closeSent) {
+                // Finish any partial frame first; the helper also accepts Kill
+                // before its process handle has been published.
+                const unsigned char byte = 5;
+                if (session.process->write({&byte, 1}) == 1) session.closeSent = true;
             } else if (session.show) {
                 const unsigned char byte = 1;
                 session.process->allowForeground();
                 if (session.process->write({&byte, 1}) == 1) session.show = false;
             }
-            // A bounded read makes runner noise, truncated records and inherited
-            // pipes observable failures instead of an indefinitely busy account.
-            session.received += session.process->read(std::span(session.record).subspan(session.received));
-            if (session.received == session.record.size()) {
-                receiveStatus(session);
+            if (!session.view.closing &&
+                (session.view.state < 4 || session.view.state == 11 || session.view.state == 13) &&
+                SDL_GetTicks() > session.deadline) {
+                // A login timeout does not prove the game exited. Retain its
+                // helper so Show and Kill still work after this failure.
+                session.failed = true;
+                session.view.state = 6;
+                session.view.canShow = true;
+                session.view.status = "The game helper timed out before opening the game. Select Show or Close.";
+                state_.error = session.view.status;
+                launches_.clear();
                 changed = true;
             }
-            if (session.view.active && (session.view.state < 4 || session.view.state == 11 || session.view.state == 13) &&
-                SDL_GetTicks() > session.deadline)
-                throw std::runtime_error("The game helper timed out before opening the game. Check your "
-                                         "runner and the GW2 window.");
             cancelled(stop);
         } catch (const std::exception &e) {
-            if (!session.failed) {
-                session.view.status = e.what();
-                state_.error = e.what();
+            // A natural exit can close stdin between the read and Kill write.
+            // Its queued exit record still wins over that broken-pipe error.
+            if (session.view.closing) {
+                try {
+                    readStatus(session);
+                    if (!session.view.active) return true;
+                } catch (...) {
+                }
+            }
+            if (!session.failed || session.view.closing) {
+                session.view.status = session.view.closing
+                    ? "Could not confirm that GW2 exited. " + std::string(e.what()) : e.what();
+                state_.error = session.view.status;
             }
             session.failed = true;
-            session.view.active = session.view.canShow = false;
+            session.view.active = session.view.canShow = session.view.closing = false;
             session.view.pid = 0;
             session.view.email.clear();
             session.process.reset();

@@ -435,6 +435,15 @@ struct Form {
         return state.auth.connected && state.auth.id == id && state.auth.provider == provider;
     }
     void finish(App &app, const Snapshot &state, bool &open) {
+        if (auto command = std::get_if<Command>(&next); command &&
+            (command->action == Action::close || command->action == Action::closeAll ||
+                command->action == Action::cancelSetup)) {
+            // Process termination must not wait for saving an unrelated form.
+            auto intent = std::move(*command);
+            next = std::monostate{};
+            app.submit(std::move(intent));
+            return;
+        }
         if (pending || picker) return;
         const bool requested = next.index() != 0;
         const auto pendingCommand = std::get_if<Command>(&next);
@@ -843,7 +852,8 @@ struct AccountLayout {
 };
 AccountLayout accountLayout(const Account *account, const Form &form, const Snapshot &state) {
     const auto session = account ? state.session(account->id) : nullptr;
-    const bool expanded = (session && ((session->active && session->state == 9) || session->needsVerification())) ||
+    const bool expanded = (session && ((session->active && !session->closing && session->state == 9) ||
+        session->needsVerification())) ||
         (form.page == Form::Page::account &&
             form.id == (account ? std::string_view(account->id) : std::string_view{}));
     ImGui::PushID(account ? account->id.c_str() : "new-account");
@@ -865,7 +875,7 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     const auto &id = account ? account->id : ready.id;
     const auto [found, expanded, reveal, total] = layout;
     const auto &session = found ? *found : ready;
-    const bool registration = account && session.active && session.state == 9;
+    const bool registration = account && session.active && !session.closing && session.state == 9;
     const bool verification = account && session.needsVerification();
     const bool busy = form.pending || form.picker || state.busy;
     ImGui::PushID(account ? account->id.c_str() : "new-account");
@@ -914,13 +924,13 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     const ImVec2 actions{pos.x + available - 64 * scale, row.y + (header - 28 * scale) / 2};
     ImGui::SetCursorScreenPos(actions);
     if (account) {
-        ImGui::BeginDisabled(session.active ? !session.canClose() || form.pending : busy);
+        ImGui::BeginDisabled(session.active ? !session.canClose() : busy);
         if (iconButton(session.active ? Icon::close : expanded ? Icon::collapse : Icon::edit,
-                session.active ? "Close game"
+                session.active ? "Kill game process"
                     : expanded ? "Close editor"
                                : "Edit account")) {
             if (session.active)
-                form.request({.action = Action::close, .id = id});
+                form.request({.action = Action::close, .id = id, .pid = session.pid});
             else if (expanded)
                 form.go(Form::Page::accounts);
             else
@@ -1100,7 +1110,7 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
     }
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const auto page = form.page;
-    const bool closeAll = std::ranges::any_of(state.sessions, &SessionView::canClose);
+    const bool closeAll = state.launchesQueued || std::ranges::any_of(state.sessions, &SessionView::canClose);
     const auto actionCount = 2 + closeAll;
     const auto width = ImGui::GetContentRegionAvail().x;
     const auto actionsWidth = (iconSize * actionCount + iconSpacing * (actionCount - 1)) * scale;
@@ -1123,10 +1133,8 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
     ImGui::EndDisabled();
     if (closeAll) {
         ImGui::SameLine(0, iconSpacing * scale);
-        ImGui::BeginDisabled(busy);
-        if (iconButton(Icon::closeAll, "Close all running games"))
+        if (iconButton(Icon::closeAll, "Kill all launched games and cancel queued launches"))
             form.request({.action = Action::closeAll});
-        ImGui::EndDisabled();
     }
     ImGui::Spacing();
 }

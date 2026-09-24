@@ -17,9 +17,21 @@ extern "C" __declspec(dllimport) DWORD __cdecl Gw2MultiLauncherExecute(
     HWND, DWORD, DWORD, const wchar_t *, const wchar_t *, DWORD *, DWORD *, DWORD *, const gw2::Layout *);
 
 namespace {
-constexpr DWORD Magic = 0x364C4D47; // GML6: launch settings, credentials and verification/control messages.
-// Connected, Show, invalid input, setup cancel, Close, stop input reader.
+constexpr DWORD Magic = 0x374C4D47; // GML7: Close terminates the owned game process.
+// Bits: 1 connected, 2 Show, 4 invalid input, 8 Kill, 16 kill failed, 32 stop reader.
 std::atomic<unsigned> control{1};
+// Borrowed from main: publish before Starting, join the reader before closing
+// the handle. Kill must not wait for native login or DLL loading to return.
+std::atomic<HANDLE> gameProcess{};
+void KillGame() {
+    const auto process = gameProcess.load();
+    // Either publication or the reader consumes a queued Kill, exactly once.
+    // A pre-start request stays pending until creation publishes its handle.
+    if (process && (control.fetch_and(~8u) & 8) &&
+        !TerminateProcess(process, ERROR_PROCESS_ABORTED) &&
+        WaitForSingleObject(process, 0) != WAIT_OBJECT_0)
+        control.fetch_or(16);
+}
 struct Failure {
     DWORD code;
 };
@@ -98,6 +110,8 @@ class DllCopies {
         std::array<BYTE, 65536> bytes{};
         for (;;) {
             if (!(control.load() & 1)) throw Failure{ERROR_CANCELLED};
+            if (WaitForSingleObject(process_.value, 0) == WAIT_OBJECT_0)
+                throw Failure{ERROR_PROCESS_ABORTED};
             DWORD read{};
             if (!ReadFile(input.value, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr))
                 throw Failure{GetLastError()};
@@ -292,11 +306,8 @@ DWORD WINAPI ReadControl(void *parameter) {
         ReadFile(GetStdHandle(STD_INPUT_HANDLE), &command, 1, &count, nullptr) && count) {
         if (command == 2) break;
         if (command == 5) {
-            control.fetch_or(16);
-            continue;
-        }
-        if (command == 4) {
             control.fetch_or(8);
+            KillGame();
             continue;
         }
         if (command == 6) {
@@ -370,11 +381,7 @@ bool Control(Client &client) {
         client.hide = false;
         Reveal(client, true);
     }
-    if (state & 16) {
-        Observe(client);
-        const auto window = client.game ? client.game : client.login;
-        if (window && !PostMessageW(window, WM_CLOSE, 0, 0)) throw Failure{1008};
-    }
+    if (state & 16) Report(6, 1008);
     return true;
 }
 DWORD Native(Client &client, DWORD operation, DWORD &flags, const wchar_t *email = nullptr,
@@ -387,6 +394,22 @@ DWORD Native(Client &client, DWORD operation, DWORD &flags, const wchar_t *email
     if (result == 9) throw Failure{20000 + error};
     if (result == 3 || result == 5 || result == 0) throw Failure{1100 + result};
     return result;
+}
+void ReportFailure(Client &client, HANDLE process, DWORD code) {
+    client.hide = false;
+    Reveal(client);
+    try {
+        Report(6, code);
+        // Failure is not exit: keep the reader/handle alive for Show and Kill,
+        // including unexpected exceptions during startup or DLL copying.
+        while (process && WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
+            if (!Control(client)) return;
+            Sleep(100);
+        }
+        Report(5);
+    } catch (...) {
+        Reveal(client);
+    }
 }
 
 void Update(const std::wstring &executable, const std::wstring &folder, Client &client) {
@@ -434,7 +457,7 @@ void Update(const std::wstring &executable, const std::wstring &folder, Client &
     Report(8);
 }
 struct Launch {
-    enum Phase { starting = 1, signingIn, launching, running, registration = 9, cancelling, agreement,
+    enum Phase { starting = 1, signingIn, launching, running, registration = 9, agreement,
         verification, checkingCode };
     Client &client;
     HANDLE process;
@@ -459,11 +482,6 @@ struct Launch {
         deadline = GetTickCount64() + 120000;
     }
     void setup() {
-        if (control.fetch_and(~8u) & 8) {
-            if (!client.login || !PostMessageW(client.login, WM_CLOSE, 0, 0)) throw Failure{1004};
-            phase = cancelling;
-            deadline = GetTickCount64() + 10000;
-        }
         auto retry = TakeCredentials();
         if (!retry.bytes.empty() && phase == registration) {
             if (operation < 2 || !retry.name()[0] ||
@@ -525,7 +543,7 @@ struct Launch {
             Report(4);
             phase = running;
         }
-        if ((phase < running || phase == cancelling || phase == checkingCode) && GetTickCount64() > deadline)
+        if ((phase < running || phase == checkingCode) && GetTickCount64() > deadline)
             throw Failure{WAIT_TIMEOUT};
     }
     void run() {
@@ -645,6 +663,10 @@ int main(int argc, char **argv) {
         if (GetLastError() != ERROR_FILE_NOT_FOUND) throw Failure{GetLastError()};
         reader.start(operation);
         if (!Control(client)) return 0;
+        if (control.load() & 8) {
+            Report(5);
+            return 0;
+        }
         STARTUPINFOW startup{sizeof(startup)};
         startup.dwFlags = STARTF_USESHOWWINDOW;
         startup.wShowWindow = client.hide ? SW_HIDE : SW_SHOWNORMAL;
@@ -654,31 +676,17 @@ int main(int argc, char **argv) {
                 folder.c_str(), &startup, &info))
             throw Failure{GetLastError()};
         process.value = info.hProcess;
+        gameProcess.store(process.value);
+        KillGame();
         CloseHandle(info.hThread);
         client.pid = info.dwProcessId;
         Report(1, client.pid); // Starting: detail identifies the game, not this helper.
         Launch{client, process.value, operation, {}, std::move(dlls), copies}.run();
     } catch (const Failure &failure) {
-        client.hide = false;
-        Reveal(client);
-        try {
-            Report(6, failure.code);
-            // Preserve Show and process observation after a challenge or uncertain result.
-            while (process.value && WaitForSingleObject(process.value, 0) == WAIT_TIMEOUT) {
-                if (!Control(client)) return 0;
-                Sleep(100);
-            }
-            Report(5);
-        } catch (...) {
-            Reveal(client);
-        }
+        ReportFailure(client, process.value, failure.code);
         return 1;
     } catch (...) {
-        Reveal(client);
-        try {
-            Report(6, 1000);
-        } catch (...) {
-        }
+        ReportFailure(client, process.value, 1000);
         return 1;
     }
     return 0;

@@ -4,6 +4,10 @@ Several Guild Wars 2 accounts. One copy of the game.
 
 Launch one account, or all of them. Each account opens in its own window. Closing the launcher leaves the game open.
 
+An account's cross kills its game process immediately, including during startup
+or sign-in. The double cross kills every game launched by this launcher and
+cancels queued launches. Canceling account setup also kills that account's game.
+
 <p align="center">
   <img src="account-list.png" width="280" alt="Account list">
 </p>

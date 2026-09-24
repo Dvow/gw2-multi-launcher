@@ -629,6 +629,8 @@ extern "C" __declspec(dllexport) DWORD __cdecl Gw2MultiLauncherExecute(
     DWORD actualPid{};
     const auto thread = GetWindowThreadProcessId(window, &actualPid);
     if (!thread || actualPid != targetPid || operation > VerifyCode) return ERROR_INVALID_PARAMETER;
+    Handle process{operation == LoadDll ? OpenProcess(SYNCHRONIZE, FALSE, targetPid) : nullptr};
+    if (operation == LoadDll && !process.value) return GetLastError();
     if (operation == VerifyCode && (!password || !password[0] || wcsnlen_s(password, 8) >= 8))
         return ERROR_INVALID_PARAMETER;
     // LoadDll uses email/password arguments for source directory/staged file;
@@ -681,7 +683,7 @@ extern "C" __declspec(dllexport) DWORD __cdecl Gw2MultiLauncherExecute(
         DWORD_PTR ignored{};
         SetLastError(ERROR_SUCCESS);
         if (!SendMessageTimeoutW(window, RegisterWindowMessageW(MessageName), GetCurrentProcessId(),
-                static_cast<LPARAM>(nonce), SMTO_ABORTIFHUNG | SMTO_BLOCK, 10000, &ignored)) {
+                static_cast<LPARAM>(nonce), SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 10000, &ignored)) {
             error = GetLastError();
             if (!error) error = ERROR_TIMEOUT;
         }
@@ -691,11 +693,17 @@ extern "C" __declspec(dllexport) DWORD __cdecl Gw2MultiLauncherExecute(
     if (!error && operation == LoadDll) {
         const auto deadline = GetTickCount64() + 10000;
         while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&p->result), 0, 0) == LoadingDll) {
+            // A killed game cannot finish the loader's shared-memory reply.
+            // Observe exit instead of leaving its account busy until timeout.
+            const auto wait = WaitForSingleObject(process.value, 10);
+            if (wait != WAIT_TIMEOUT) {
+                error = wait == WAIT_OBJECT_0 ? ERROR_PROCESS_ABORTED : GetLastError();
+                break;
+            }
             if (GetTickCount64() >= deadline) {
                 error = ERROR_TIMEOUT;
                 break;
             }
-            Sleep(10);
         }
     }
     if (!error) {

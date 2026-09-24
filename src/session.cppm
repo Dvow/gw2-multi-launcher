@@ -134,7 +134,7 @@ class SteamConnection {
 
 inline void gameRequest(Bytes &out, const Catalog &catalog, const Account &account,
     const std::vector<std::string> &dlls) {
-    appendNumber(out, 0x364C4D47);
+    appendNumber(out, 0x374C4D47);
     appendNumber(out,
         account.provider == Provider::epic        ? 3u
             : account.provider == Provider::steam ? 2u
@@ -208,15 +208,13 @@ inline void report(std::span<const unsigned char> bytes) {
         connected = false;
 }
 inline void report(unsigned state, unsigned detail = 0) {
-    const std::array<unsigned, 3> record{0x364C4D47, state, detail};
+    const std::array<unsigned, 3> record{0x374C4D47, state, detail};
     report({reinterpret_cast<const unsigned char *>(record.data()), sizeof(record)});
 }
 inline void readControl() {
     for (int byte; (byte = std::fgetc(stdin)) != EOF;) {
         if (byte == 1)
             control.fetch_or(2);
-        else if (byte == 4)
-            control.fetch_or(4);
         else if (byte == 5)
             control.fetch_or(8);
         else if (byte == 3 || byte == 6) {
@@ -262,7 +260,7 @@ class SteamSession {
     std::unique_ptr<Process> game;
     std::array<unsigned char, 12> record{};
     std::size_t written{}, received{};
-    bool show{};
+    bool show{}, closing{}, closeSent{};
     std::uint64_t deadline{};
 
     void readRequest() {
@@ -289,7 +287,7 @@ class SteamSession {
         (void)identityFields.next();
         identityFields.end();
         offset += secretSize;
-        if (size - offset < 20 || number(request.bytes, offset) != 0x364C4D47 ||
+        if (size - offset < 20 || number(request.bytes, offset) != 0x374C4D47 ||
             number(request.bytes, offset + 4) != 2)
             throw std::runtime_error("Invalid session request.");
         steam = std::make_unique<SteamConnection>();
@@ -307,26 +305,23 @@ class SteamSession {
         deadline = SDL_GetTicks() + 30000;
     }
     void controls() {
-        const auto control = broker::control.fetch_and(~14u);
+        const auto control = broker::control.fetch_and(~10u);
         if (!(control & 1)) {
             show |= broker::connected;
             broker::connected = false;
         }
         show |= (control & 2) != 0;
-        // Forward the exit request without releasing Steam's ticket; only the
+        // Forward Kill without releasing Steam's ticket; only the
         // game helper's exited status ends this session.
-        if (control & 8) {
-            outgoing.bytes.push_back(5);
-            show = false;
-        }
-        if (control & 4) {
-            if (stage != Stage::name || !outgoing.bytes.empty())
-                throw std::runtime_error("No account setup to cancel.");
-            outgoing.bytes.push_back(4);
-            stage = Stage::client;
-        }
+        if (control & 8) closing = true;
         auto &input = broker::nameInput();
         std::lock_guard lock(input.mutex);
+        if (closing) {
+            show = false;
+            input.code.clear();
+            input.value.clear();
+            return;
+        }
         if (input.invalid) throw std::runtime_error("Invalid display name request.");
         if (!input.code.bytes.empty()) {
             if (stage != Stage::client || !outgoing.bytes.empty())
@@ -383,33 +378,51 @@ class SteamSession {
         ticket(hex);
     }
     void pollSteam() {
-        if (stage == Stage::failed) return;
+        if (closing || stage == Stage::failed) return;
         try {
             if (auto message = steam->poll()) receiveSteam(*message);
         } catch (...) {
             fail(1010);
         }
     }
+    bool readGame() {
+        for (unsigned i = 0; i < 16; ++i) {
+            const auto count = game->read(std::span(record).subspan(received));
+            if (!count) break;
+            received += count;
+            if (received != record.size()) continue;
+            received = 0;
+            if (number(record) != 0x374C4D47) throw std::runtime_error("Invalid game helper status.");
+            if (number(record, 4) == 6 && number(record, 8) == 1008) closing = closeSent = false;
+            broker::report(record);
+            if (number(record, 4) == 5) return false;
+            if (number(record, 4) == 9 && stage != Stage::failed) {
+                stage = Stage::name;
+                show |= !broker::connected && !closing;
+            }
+        }
+        return true;
+    }
     bool pollGame() {
-        if ((stage == Stage::identity || stage == Stage::ticket) && SDL_GetTicks() > deadline)
-            throw std::runtime_error("Steam authentication timed out.");
-        if (!outgoing.bytes.empty())
-            game->write(outgoing, written);
-        else if (show) {
-            const unsigned char command = 1;
-            game->allowForeground();
-            if (game->write({&command, 1})) show = false;
+        if (!readGame()) return false;
+        if (!closing && (stage == Stage::identity || stage == Stage::ticket) && SDL_GetTicks() > deadline)
+            fail(1010); // Retain the helper so the account can still be killed.
+        try {
+            if (!outgoing.bytes.empty())
+                game->write(outgoing, written);
+            else if (closing && !closeSent) {
+                const unsigned char command = 5;
+                if (game->write({&command, 1})) closeSent = true;
+            } else if (show) {
+                const unsigned char command = 1;
+                game->allowForeground();
+                if (game->write({&command, 1})) show = false;
+            }
+        } catch (...) {
+            if (closing && !readGame()) return false;
+            throw;
         }
-        received += game->read(std::span(record).subspan(received));
-        if (received != record.size()) return true;
-        received = 0;
-        if (number(record) != 0x364C4D47) throw std::runtime_error("Invalid game helper status.");
-        broker::report(record);
-        if (number(record, 4) == 9 && stage != Stage::failed) {
-            stage = Stage::name;
-            show |= !broker::connected;
-        }
-        return number(record, 4) != 5;
+        return true;
     }
 
   public:
