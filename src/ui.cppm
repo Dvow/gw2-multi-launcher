@@ -188,6 +188,17 @@ bool iconButton(Icon icon, const char *label, bool primary = false) {
     help(label);
     return pressed;
 }
+void pulseOutline(double since) {
+    if (since < 0) return;
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    auto color = accent;
+    color.w = 0.8f * static_cast<float>(0.5 - 0.5 * std::cos(
+        (ImGui::GetTime() - since) * 3.141592653589793));
+    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    ImGui::GetWindowDrawList()->AddRect({min.x + scale, min.y + scale},
+        {max.x - scale, max.y - scale}, ImGui::GetColorU32(color),
+        ImGui::GetStyle().FrameRounding, 1.25f * scale);
+}
 void clippedText(const char *text, float width) {
     const auto pos = ImGui::GetCursorScreenPos();
     const ImVec2 end{pos.x + width, pos.y + ImGui::GetTextLineHeight()};
@@ -249,7 +260,8 @@ struct Form {
     };
     std::variant<std::monostate, Destination, Command> next;
     double changedAt{-1};
-    double settingsHintSince{-1};
+    double gamePathHintSince{-1};
+    double addAccountHintSince{-1};
     bool rowsMoving{}, scrollToNew{};
     std::vector<std::string> selected;
     std::string id, localError, notifiedUpdate;
@@ -288,7 +300,8 @@ struct Form {
         page = target;
     }
     bool animating() const {
-        return rowsMoving || settingsHintSince >= 0 || ImGui::GetTime() - changedAt < 0.16;
+        return rowsMoving || gamePathHintSince >= 0 || addAccountHintSince >= 0 ||
+            ImGui::GetTime() - changedAt < 0.16;
     }
     float opacity() const {
         const auto t = static_cast<float>(std::clamp((ImGui::GetTime() - changedAt) / 0.16, 0.0, 1.0));
@@ -1085,15 +1098,7 @@ void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
                                               : "Settings")) {
         form.go(form.page != Form::Page::settings ? Form::Page::settings : Form::Page::accounts);
     }
-    if (form.settingsHintSince >= 0) {
-        auto color = accent;
-        color.w = 0.8f * static_cast<float>(0.5 - 0.5 * std::cos(
-            (ImGui::GetTime() - form.settingsHintSince) * 3.141592653589793));
-        const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddRect({min.x + scale, min.y + scale},
-            {max.x - scale, max.y - scale}, ImGui::GetColorU32(color),
-            ImGui::GetStyle().FrameRounding, 1.25f * scale);
-    }
+    if (form.page != Form::Page::settings) pulseOutline(form.gamePathHintSince);
     if (updateAvailable && form.page != Form::Page::settings) {
         const auto edge = ImGui::GetItemRectMax();
         ImGui::GetWindowDrawList()->AddCircleFilled(
@@ -1135,6 +1140,7 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
     ImGui::SameLine(actionsX);
     ImGui::BeginDisabled(busy);
     if (iconButton(Icon::add, "Add account")) form.go(Form::Page::account);
+    pulseOutline(form.addAccountHintSince);
     ImGui::SameLine(0, iconSpacing * scale);
     const bool editingRequested = page == Form::Page::account && !form.id.empty() &&
         (form.selected.empty() || form.isSelected(form.id));
@@ -1152,19 +1158,21 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
 }
 template <std::size_t N>
 void pathField(Form &form, SDL_Window *window, const char *label, std::array<char, N> &value, unsigned target,
-    bool folder, const char *hint) {
+    bool folder, const char *hint, double hintSince = -1) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     mutedText(label);
     ImGui::PushID(label);
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 36 * scale);
     form.edited |= ImGui::InputTextWithHint("##path", hint, value.data(), value.size());
     ImGui::SameLine();
-    if (iconButton(Icon::folder, "Browse"))
-        form.choose(window, target, folder, value[0] ? value.data() : nullptr);
+    const bool browse = iconButton(Icon::folder, "Browse");
+    pulseOutline(hintSince);
+    if (browse) form.choose(window, target, folder, value[0] ? value.data() : nullptr);
     ImGui::PopID();
 }
 void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
-    pathField(form, window, "Game executable", form.game, 1, false, "Full path to Gw2-64.exe");
+    pathField(form, window, "Game executable", form.game, 1, false, "Full path to Gw2-64.exe",
+        form.gamePathHintSince);
     form.edited |= field("Global arguments", form.args, "e.g. -windowed -loadmapinfo");
     dllField(form, window, ImGui::GetContentRegionAvail().x, {});
     form.edited |= ImGui::Checkbox("Hide sign-in window", &form.hide);
@@ -1234,12 +1242,17 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     form.rowsMoving = false;
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const bool busy = form.pending || form.picker || state.busy || !state.ready;
-    const bool settingsHint = state.error.selectGame && form.localError.empty() &&
-        form.page != Form::Page::settings && !busy;
-    if (!settingsHint)
-        form.settingsHintSince = -1;
-    else if (form.settingsHintSince < 0)
-        form.settingsHintSince = ImGui::GetTime();
+    const bool gamePathHint = state.error.selectGame && form.localError.empty() && !busy;
+    if (!gamePathHint)
+        form.gamePathHintSince = -1;
+    else if (form.gamePathHintSince < 0)
+        form.gamePathHintSince = ImGui::GetTime();
+    const bool addAccountHint = state.catalog.accounts.empty() && form.page == Form::Page::accounts &&
+        !busy && !gamePathHint;
+    if (!addAccountHint)
+        form.addAccountHintSince = -1;
+    else if (form.addAccountHintSince < 0)
+        form.addAccountHintSince = ImGui::GetTime();
     auto vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->Pos);
     ImGui::SetNextWindowSize(vp->Size);
@@ -1278,7 +1291,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
             ImGui::Dummy({0, 20 * scale});
             ImGui::PushTextWrapPos(0);
             ImGui::TextUnformatted("Your accounts, one click away.");
-            mutedText("Add an ArenaNet account to get started.");
+            mutedText("Click the + button to add your first account.");
             ImGui::PopTextWrapPos();
         }
         if (form.page == Form::Page::account && form.id.empty())
