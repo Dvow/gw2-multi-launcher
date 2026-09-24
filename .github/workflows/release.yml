@@ -18,6 +18,11 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cpm
+          key: cpm-${{ hashFiles('CMakeLists.txt', 'cmake/CPM.cmake') }}
+          restore-keys: cpm-
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: 10.0.x
@@ -34,14 +39,16 @@ jobs:
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: windows-installer
-          path: build/release/*_win-x64_setup.exe
+          path: |
+            build/release/*_win-x64_setup.exe
+            build/release/release-title.txt
           if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: native-helpers
           path: |
-            build/release/bin/GW2MultiLauncher.Host.exe
-            build/release/bin/GW2MultiLauncher.Native.dll
+            build/release/bin/*.Host.exe
+            build/release/bin/*.Native.dll
           if-no-files-found: error
 
   linux:
@@ -51,12 +58,25 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates curl git g++ cmake ninja-build pkg-config dpkg-dev file libicu-dev \
-            libsecret-1-dev libssl-dev libcurl4-openssl-dev libgl-dev libx11-dev libxext-dev \
-            libxcursor-dev libxrandr-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev
+          printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries
+          packages="ca-certificates curl git g++ cmake ninja-build pkg-config dpkg-dev file libicu-dev libsecret-1-dev libssl-dev libcurl4-openssl-dev libgl-dev libx11-dev libxext-dev libxcursor-dev libxrandr-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev"
+          for attempt in 1 2 3 4 5; do
+            if [ "$attempt" -gt 1 ]; then
+              rm -rf /var/lib/apt/lists/*
+              sleep $((attempt * 5))
+            fi
+            if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $packages; then
+              exit 0
+            fi
+            echo "Package install failed on attempt ${attempt}"
+          done
+          exit 1
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cpm
+          key: cpm-${{ hashFiles('CMakeLists.txt', 'cmake/CPM.cmake') }}
+          restore-keys: cpm-
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: 10.0.x
@@ -104,6 +124,8 @@ jobs:
           }
           version=$(sed -nE 's/^project\(GW2MultiLauncher VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p' CMakeLists.txt)
           test -n "$version"
+          product=$(tr -d '\r\n' < build/release/release-title.txt)
+          test -n "$product"
           tag="v$version"
           if gh release view "$tag" --json isDraft --jq '.isDraft' > build/draft; then
             if [ "$(cat build/draft)" = false ]; then
@@ -118,9 +140,9 @@ jobs:
               test "$newest" = "$version" && test "${latest#v}" != "$version"
             fi
             gh release create "$tag" --draft --target "$GITHUB_SHA" \
-              --title "Gw2 Multi $tag" --generate-notes
+              --title "$product $tag" --generate-notes
           fi
           gh release upload "$tag" "build/release/gw2-multi-launcher_${version}_win-x64_setup.exe" \
             "build/release/gw2-multi-launcher_${version}_amd64.deb" --clobber
           publish_metadata
-          gh release edit "$tag" --title "Gw2 Multi $tag" --target "$GITHUB_SHA" --draft=false --latest
+          gh release edit "$tag" --title "$product $tag" --target "$GITHUB_SHA" --draft=false --latest

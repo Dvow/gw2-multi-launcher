@@ -87,6 +87,13 @@ struct Snapshot {
     std::string editId, editEmail;
     std::uint64_t completed{};
     bool ready{}, busy{}, fatal{}, launchesQueued{};
+    std::vector<std::string> queuedLaunches;
+    bool updating() const {
+        return update.stage == UpdateStage::installing || update.stage == UpdateStage::installed;
+    }
+    bool launchQueued(std::string_view id) const {
+        return std::ranges::find(queuedLaunches, id) != queuedLaunches.end();
+    }
     const SessionView *session(std::string_view id) const {
         const auto found = std::ranges::find(sessions, id, &SessionView::id);
         return found == sessions.end() ? nullptr : &*found;
@@ -131,6 +138,7 @@ class App {
         for (const auto &s : sessions_)
             state_.sessions.push_back(s.view);
         state_.launchesQueued = !launches_.empty();
+        state_.queuedLaunches.assign(launches_.begin(), launches_.end());
         state_.busy = !launches_.empty() || blocked() || state_.update.stage == UpdateStage::installing ||
             state_.update.stage == UpdateStage::installed;
         if (store_) state_.catalog = store_->catalog();
@@ -234,9 +242,9 @@ class App {
             const auto &account = store_->account(id);
             session.outgoing = steamRequest(catalog, account, openAccount(account, stop), dlls);
 #ifdef _WIN32
-            constexpr auto executable = "GW2MultiLauncher.exe";
+            constexpr auto executable = GW2_PROGRAM_FILE ".exe";
 #else
-            constexpr auto executable = "GW2MultiLauncher";
+            constexpr auto executable = GW2_PROGRAM_FILE;
 #endif
             session.process = std::make_unique<Process>(
                 std::vector<std::string>{utf8(installed(executable)), "--steam-session"},
@@ -274,6 +282,8 @@ class App {
     void prepare(std::stop_token stop);
     void saveAccount(Command &command, std::stop_token stop) {
         if (active(command.id)) throw std::runtime_error("Close this account's client before editing it.");
+        if (std::ranges::find(launches_, command.id) != launches_.end())
+            throw std::runtime_error("This account is queued to launch.");
         if (state_.auth.busy) throw std::runtime_error("Finish signing in before saving.");
         if (!connectedSession_.bytes.empty() &&
             (state_.auth.id != command.id || state_.auth.provider != command.provider))
@@ -293,6 +303,8 @@ class App {
     }
     void editAccount(Command &command, std::stop_token stop) {
         if (active(command.id)) throw std::runtime_error("Close this account's client before editing it.");
+        if (std::ranges::find(launches_, command.id) != launches_.end())
+            throw std::runtime_error("This account is queued to launch.");
         clearAuthentication();
         const auto &account = store_->account(command.id);
         auto secret = openAccount(account, stop);
@@ -309,11 +321,17 @@ class App {
         // selection must never fall back to launching all accounts.
         for (const auto &id : command.ids)
             (void)store_->account(id);
-        for (const auto &a : store_->catalog().accounts)
-            if (std::ranges::find(command.ids, a.id) != command.ids.end() && !active(a.id))
-                launches_.push_back(a.id);
-        if (launches_.empty()) throw std::runtime_error("The requested accounts are already running.");
-        prepare(stop);
+        const bool underway = !launches_.empty() || blocked();
+        bool added = false;
+        for (const auto &a : store_->catalog().accounts) {
+            if (std::ranges::find(command.ids, a.id) == command.ids.end()) continue;
+            if (active(a.id) || std::ranges::find(launches_, a.id) != launches_.end()) continue;
+            launches_.push_back(a.id);
+            added = true;
+        }
+        if (!added && launches_.empty() && !blocked())
+            throw std::runtime_error("The requested accounts are already running.");
+        if (added && !underway) prepare(stop);
     }
     void setupAccount(Command &command, std::stop_token stop) {
         if (!validDisplayName(command.label))
@@ -402,8 +420,11 @@ class App {
     void dispatch(Command &command, std::stop_token stop) {
         switch (command.action) {
         case Action::settings: {
-            if (running() && command.settings.gamePath != store_->catalog().gamePath)
-                throw std::runtime_error("Close your clients before changing the game installation.");
+            if (command.settings.gamePath != store_->catalog().gamePath &&
+                (running() || !launches_.empty()))
+                throw std::runtime_error(running()
+                        ? "Close your clients before changing the game installation."
+                        : "Wait for the current launch to finish before changing the game installation.");
             const bool check = command.settings.autoUpdate && !store_->catalog().autoUpdate;
             store_->settings(std::move(command.settings));
             if (check) beginUpdate(false, stop);
@@ -415,6 +436,8 @@ class App {
         case Action::remove:
             if (active(command.id))
                 throw std::runtime_error("Close this account's client before removing it.");
+            if (std::ranges::find(launches_, command.id) != launches_.end())
+                throw std::runtime_error("This account is queued to launch.");
             store_->remove(command.id);
             break;
         case Action::edit:
@@ -482,7 +505,12 @@ class App {
             state_.editEmail.clear();
         }
         try {
-            if (command.action != Action::show && command.action != Action::close &&
+            if (command.action == Action::launch || command.action == Action::edit ||
+                command.action == Action::save || command.action == Action::remove ||
+                command.action == Action::settings) {
+                if (state_.updating())
+                    throw std::runtime_error("Wait for the current update to finish.");
+            } else if (command.action != Action::show && command.action != Action::close &&
                 command.action != Action::closeAll && command.action != Action::guard &&
                 command.action != Action::verify && command.action != Action::cancelConnect &&
                 command.action != Action::displayName && command.action != Action::cancelSetup &&
@@ -496,7 +524,7 @@ class App {
                 state_.auth.busy = false;
             }
             reportError(e);
-            launches_.clear();
+            if (command.action == Action::launch) launches_.clear();
         }
         state_.completed = command.serial;
         publish();
@@ -825,7 +853,8 @@ class App {
     }
     std::uint64_t submit(Command command) {
         std::lock_guard lock(mutex_);
-        if (commands_.size() >= 8) throw std::runtime_error("Wait for the current action to finish.");
+        const auto limit = command.action == Action::launch ? 100u : 8u;
+        if (commands_.size() >= limit) throw std::runtime_error("Wait for the current action to finish.");
         command.serial = ++serial_;
         commands_.push_back(std::move(command));
         changed_.notify_all();

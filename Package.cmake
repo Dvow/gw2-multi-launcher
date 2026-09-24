@@ -3,48 +3,6 @@ if(NOT WIN32 AND CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
 endif()
 include(GNUInstallDirs)
 
-# Generate distribution metadata in the build tree, not the source checkout.
-set(notices "${CMAKE_BINARY_DIR}/ThirdPartyNotices.txt")
-file(WRITE "${notices}" "GW2 Multi Launcher third-party notices\n\n")
-foreach(license "${sdl3_SOURCE_DIR}/LICENSE.txt" "${imgui_SOURCE_DIR}/LICENSE.txt" "${json_SOURCE_DIR}/LICENSE.MIT" "${minhook_SOURCE_DIR}/LICENSE.txt")
-  file(READ "${license}" text)
-  file(APPEND "${notices}" "${text}\n\n")
-endforeach()
-file(READ "${imgui_SOURCE_DIR}/LICENSE.txt" mit)
-string(REGEX REPLACE "Copyright \\(c\\) 2014-2026 Omar Cornut"
-  "ProggyClean: Copyright (c) 2004, 2005 Tristan Grimmer\nProggyForever: Copyright (c) 2026 Disco Hello; Copyright (c) 2019, 2023 Tristan Grimmer" font_mit "${mit}")
-file(APPEND "${notices}" "Embedded ImGui fonts\n${font_mit}\n\nRoboto-Medium.ttf: Copyright 2011 Google Inc. All Rights Reserved.\n")
-file(READ "${json_SOURCE_DIR}/LICENSES/Apache-2.0.txt" apache)
-file(APPEND "${notices}" "${apache}\n")
-
-function(include_notice name url hash)
-  set(file "${CMAKE_BINARY_DIR}/licenses/${hash}.txt")
-  file(DOWNLOAD "${url}" "${file}" EXPECTED_HASH "SHA256=${hash}" TLS_VERIFY ON TIMEOUT 30)
-  file(READ "${file}" text)
-  file(APPEND "${notices}" "\n${name}\nSource: ${url}\n${text}\n")
-endfunction()
-include_notice("SteamKit2"
-  "https://raw.githubusercontent.com/SteamRE/SteamKit/1c7bc9c41a529e8fbb1e6890f1e4dbcdc5200cb7/SteamKit2/SteamKit2/license.txt"
-  d0c87e66d00e92e13cfa07158bf07e9be65e18aa5220d06af8532092521e78fa)
-include_notice("SteamKit2 LGPL"
-  "https://raw.githubusercontent.com/SteamRE/SteamKit/1c7bc9c41a529e8fbb1e6890f1e4dbcdc5200cb7/LICENSE"
-  00a89b0d18aacd4114decf79122db87bf35bddaf2bc50e383c9c9f4c263390b2)
-include_notice("QRCoder"
-  "https://raw.githubusercontent.com/Shane32/QRCoder/443d5a1f76debf203b1e252efee6996a15d41f5c/LICENSE.txt"
-  22e4c25e35c416b15f655a62378d964597c15c6c27fe2ff123444491eec0649b)
-include_notice("protobuf-net"
-  "https://raw.githubusercontent.com/protobuf-net/protobuf-net/dfdfce61a739cfd76f05fcdacf8a4b3b9e94e684/Licence.txt"
-  2054377b5c04fb70c67fe91ca12417e9d413e533169f1270ef69bd815f3053f3)
-include_notice("ZstdSharp"
-  "https://raw.githubusercontent.com/oleg-st/ZstdSharp/0ee6121aaa173b42e68d3c6c8816a68e910e0557/LICENSE"
-  9a6a7216e532c4ee4f78881d31fb641c27148eb01b2d0e8e3235ffe9a70a662c)
-include_notice(".NET runtime"
-  "https://raw.githubusercontent.com/dotnet/runtime/v10.0.11/LICENSE.TXT"
-  cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310)
-include_notice(".NET third parties"
-  "https://raw.githubusercontent.com/dotnet/runtime/v10.0.11/THIRD-PARTY-NOTICES.TXT"
-  66f1d4e44973185519bb4aa8a9718eb22fc7af2cc532e3ae9cfc4c127ee7fc54)
-
 function(gw2_fetch_innosetup destination)
   set(installer "${CMAKE_BINARY_DIR}/innosetup-7.1.0-x64.exe")
   message(STATUS "Downloading Inno Setup 7.1.0")
@@ -72,17 +30,13 @@ function(gw2_fetch_innosetup destination)
   endif()
 endfunction()
 
-set(setup_dependencies gw2-multi-launcher ${native_targets}
-  "${steam_output}/GW2MultiLauncher.Steam.dll"
-  docs/README.md LICENSE "${notices}" src/icons/gw2-multi-launcher.png)
+set(setup_dependencies gw2-multi-launcher ${native_targets} ${steam_setup_depends}
+  src/icons/gw2-multi-launcher.png)
 
 if(WIN32)
+  file(REMOVE "${CMAKE_BINARY_DIR}/ThirdPartyNotices.txt")
   install(TARGETS gw2-multi-launcher ${native_targets} RUNTIME DESTINATION . LIBRARY DESTINATION .)
-  install(DIRECTORY "${steam_output}/" DESTINATION steam USE_SOURCE_PERMISSIONS)
-  install(FILES docs/README.md LICENSE "${notices}" DESTINATION .)
-  include_notice("Inno Setup"
-    "https://raw.githubusercontent.com/jrsoftware/issrc/is-7_1_0/license.txt"
-    2e5346868c2a18434489824e11d65c3031620f792fefc415d05f19cd441abf5c)
+  install(PROGRAMS "${GW2_STEAM_EXECUTABLE}" DESTINATION .)
   set(innosetup_dir "${CMAKE_SOURCE_DIR}/build/tools/Inno Setup 7")
   if(DEFINED CACHE{GW2_ISCC} AND NOT EXISTS "${GW2_ISCC}")
     unset(GW2_ISCC CACHE)
@@ -101,11 +55,11 @@ if(WIN32)
   endif()
   set(setup [=[
 [Setup]
-AppId=GW2MultiLauncher
-AppName=GW2 Multi Launcher
+AppId=@GW2_APP_ID@
+AppName=@GW2_PRODUCT_NAME@
 AppVersion=@PROJECT_VERSION@
 AppPublisher=GW2 Multi Launcher contributors
-DefaultDirName={localappdata}\Programs\GW2 Multi Launcher
+DefaultDirName={localappdata}\Programs\@GW2_PRODUCT_NAME@
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -116,33 +70,42 @@ WizardStyle=modern
 SetupIconFile=@CMAKE_BINARY_DIR@/icon.ico
 CloseApplications=no
 RestartApplications=no
-UninstallDisplayName=GW2 Multi Launcher
-UninstallDisplayIcon={app}\GW2MultiLauncher.exe
+UninstallDisplayName=@GW2_PRODUCT_NAME@
+UninstallDisplayIcon={app}\@GW2_PROGRAM_FILE@.exe
 OutputDir=@CMAKE_BINARY_DIR@
 OutputBaseFilename=gw2-multi-launcher_@PROJECT_VERSION@_win-x64_setup
 Compression=lzma2/max
 SolidCompression=yes
-LicenseFile=@CMAKE_SOURCE_DIR@/LICENSE
 
 [Files]
-Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/GW2MultiLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/GW2MultiLauncher.Host.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/GW2MultiLauncher.Native.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "@steam_output@/*"; DestDir: "{app}/steam"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "@CMAKE_SOURCE_DIR@/docs/README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "@CMAKE_SOURCE_DIR@/LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "@CMAKE_BINARY_DIR@/ThirdPartyNotices.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.png"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.Host.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.Native.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@GW2_STEAM_EXECUTABLE@"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@CMAKE_BINARY_DIR@/uninstall-stub.exe"; Flags: dontcopy
 
 [InstallDelete]
 Type: files; Name: "{app}\gw2-multi-launcher.bmp"
 Type: files; Name: "{app}\gw2-multi-launcher.png"
+Type: files; Name: "{app}\GW2MultiLauncher.Host.exe"
+Type: files; Name: "{app}\GW2MultiLauncher.Native.dll"
+Type: filesandordirs; Name: "{app}\steam"
+Type: files; Name: "{app}\README.md"
+Type: files; Name: "{app}\LICENSE"
+Type: files; Name: "{app}\ThirdPartyNotices.txt"
+
+[UninstallDelete]
+Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.exe"
+Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.dat"
+Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.exe.removing"
 
 [Icons]
-Name: "{userprograms}\GW2 Multi Launcher"; Filename: "{app}\GW2MultiLauncher.exe"; WorkingDir: "{app}"
+Name: "{userprograms}\@GW2_PRODUCT_NAME@"; Filename: "{app}\@GW2_PROGRAM_FILE@.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\GW2MultiLauncher.exe"; Description: "Open GW2 Multi Launcher"; Flags: nowait postinstall skipifsilent; Check: not IsLauncherUpdate
-Filename: "{app}\GW2MultiLauncher.exe"; Flags: nowait; Check: IsLauncherUpdate
+Filename: "{app}\@GW2_PROGRAM_FILE@.exe"; Description: "Open @GW2_PRODUCT_NAME@"; Flags: nowait postinstall skipifsilent; Check: not IsLauncherUpdate
+Filename: "{app}\@GW2_PROGRAM_FILE@.exe"; Flags: nowait; Check: IsLauncherUpdate
 
 [Code]
 function OpenProcess(Access: LongWord; Inherit: Integer; ProcessId: LongWord): THandle;
@@ -173,12 +136,124 @@ begin
   if Index < 20 then MoveFileEx(Path, Backup, 0);
 end;
 
+procedure AppendUninstall(Dest: TFileStream; Path: String; var Size: Int64);
+var
+  Source: TFileStream;
+begin
+  Source := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
+  try
+    Size := Source.Size;
+    if Size > 0 then Dest.CopyFrom(Source, Size, 65536);
+  finally
+    Source.Free;
+  end;
+end;
+
+procedure WriteInt64(Dest: TFileStream; Value: Int64);
+var
+  Packed: AnsiString;
+  Index: Integer;
+  Piece: Integer;
+  Rest: Int64;
+begin
+  SetLength(Packed, 8);
+  Rest := Value;
+  for Index := 1 to 8 do
+  begin
+    Piece := Integer(Rest) and 255;
+    Packed[Index] := Chr(Piece);
+    Rest := Rest div 256;
+  end;
+  Dest.WriteBuffer(Packed, 8);
+end;
+
+procedure WriteUninstallFooter(Dest: TFileStream; ExeSize, DatSize: Int64);
+var
+  Magic: AnsiString;
+begin
+  SetLength(Magic, 8);
+  Magic[1] := 'K';
+  Magic[2] := 'X';
+  Magic[3] := 'U';
+  Magic[4] := 'N';
+  Magic[5] := 'I';
+  Magic[6] := 'N';
+  Magic[7] := 'S';
+  Magic[8] := 'T';
+  Dest.WriteBuffer(Magic, 8);
+  WriteInt64(Dest, ExeSize);
+  WriteInt64(Dest, DatSize);
+end;
+
+function WritePackedUninstaller(StubPath, ExePath, DatPath, TargetPath: String): Boolean;
+var
+  Dest: TFileStream;
+  ExeSize, DatSize: Int64;
+begin
+  Result := False;
+  Dest := TFileStream.Create(TargetPath, fmCreate);
+  try
+    AppendUninstall(Dest, StubPath, ExeSize);
+    if ExeSize <= 0 then Exit;
+    AppendUninstall(Dest, ExePath, ExeSize);
+    if ExeSize <= 0 then Exit;
+    AppendUninstall(Dest, DatPath, DatSize);
+    if DatSize <= 0 then Exit;
+    WriteUninstallFooter(Dest, ExeSize, DatSize);
+    Result := True;
+  finally
+    Dest.Free;
+  end;
+end;
+
+procedure PackUninstaller;
+var
+  StubPath, ExePath, DatPath, TargetPath, OldDat: String;
+begin
+  StubPath := ExpandConstant('{tmp}\uninstall-stub.exe');
+  ExePath := ExpandConstant('{app}\unins000.exe');
+  DatPath := ExpandConstant('{app}\unins000.dat');
+  TargetPath := ExpandConstant('{app}\Uninstall @GW2_PRODUCT_NAME@.exe');
+  OldDat := ExpandConstant('{app}\Uninstall @GW2_PRODUCT_NAME@.dat');
+  if not FileExists(ExePath) then Exit;
+  if not FileExists(DatPath) then Exit;
+  try
+    ExtractTemporaryFile('uninstall-stub.exe');
+  except
+    Exit;
+  end;
+  if not FileExists(StubPath) then Exit;
+  DeleteFile(TargetPath);
+  if not WritePackedUninstaller(StubPath, ExePath, DatPath, TargetPath) then
+  begin
+    DeleteFile(TargetPath);
+    Exit;
+  end;
+  if not DeleteFile(ExePath) then Exit;
+  if not DeleteFile(DatPath) then Exit;
+  DeleteFile(OldDat);
+  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\@GW2_APP_ID@_is1',
+    'UninstallString', '"' + TargetPath + '"');
+  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\@GW2_APP_ID@_is1',
+    'QuietUninstallString', '"' + TargetPath + '" /SILENT');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssPostInstall then
+  begin
+    PackUninstaller;
+    Exit;
+  end;
   if CurStep <> ssInstall then Exit;
+  ParkInstalledFile('{app}\@GW2_PROGRAM_FILE@.exe');
   ParkInstalledFile('{app}\GW2MultiLauncher.exe');
+  ParkInstalledFile('{app}\@GW2_PROGRAM_FILE@.Host.exe');
   ParkInstalledFile('{app}\GW2MultiLauncher.Host.exe');
+  ParkInstalledFile('{app}\@GW2_PROGRAM_FILE@.Native.dll');
   ParkInstalledFile('{app}\GW2MultiLauncher.Native.dll');
+  ParkInstalledFile('{app}\@GW2_PROGRAM_FILE@.Steam.exe');
+  ParkInstalledFile('{app}\steam\@GW2_PROGRAM_FILE@.Steam.exe');
   ParkInstalledFile('{app}\steam\GW2MultiLauncher.Steam.exe');
   ParkInstalledFile('{app}\steam\GW2MultiLauncher.Steam.dll');
 end;
@@ -202,7 +277,7 @@ begin
   Result := WaitForSingleObject(Handle, 30000) = 0;
   CloseHandle(Handle);
   if not Result then
-    MsgBox('Close GW2 Multi Launcher, then run the update again.', mbError, MB_OK);
+    MsgBox('Close @GW2_PRODUCT_NAME@, then run the update again.', mbError, MB_OK);
 end;
 ]=])
   string(CONFIGURE "${setup}" setup @ONLY)
@@ -210,21 +285,37 @@ end;
   set(setup_file "${CMAKE_BINARY_DIR}/gw2-multi-launcher_${PROJECT_VERSION}_win-x64_setup.exe")
   add_custom_command(OUTPUT "${setup_file}"
     COMMAND "${GW2_ISCC}" /Qp "${CMAKE_BINARY_DIR}/setup.iss"
-    DEPENDS ${setup_dependencies} "${CMAKE_BINARY_DIR}/setup.iss" "${CMAKE_BINARY_DIR}/icon.ico"
+    DEPENDS ${setup_dependencies} uninstall-stub "${CMAKE_BINARY_DIR}/setup.iss" "${CMAKE_BINARY_DIR}/icon.ico"
     COMMENT "Building Windows installer" VERBATIM)
 else()
+  set(notices "${CMAKE_BINARY_DIR}/ThirdPartyNotices.txt")
+  file(WRITE "${notices}" "GW2 Multi Launcher third-party notices\n\n")
+  foreach(license "${SDL3_SOURCE_DIR}/LICENSE.txt" "${imgui_SOURCE_DIR}/LICENSE.txt" "${json_SOURCE_DIR}/LICENSE.MIT" "${minhook_SOURCE_DIR}/LICENSE.txt")
+    file(READ "${license}" text)
+    file(APPEND "${notices}" "${text}\n\n")
+  endforeach()
+  file(READ "${imgui_SOURCE_DIR}/LICENSE.txt" mit)
+  string(REGEX REPLACE "Copyright \\(c\\) 2014-2026 Omar Cornut"
+    "ProggyClean: Copyright (c) 2004, 2005 Tristan Grimmer\nProggyForever: Copyright (c) 2026 Disco Hello; Copyright (c) 2019, 2023 Tristan Grimmer" font_mit "${mit}")
+  file(APPEND "${notices}" "Embedded ImGui fonts\n${font_mit}\n\nRoboto-Medium.ttf: Copyright 2011 Google Inc. All Rights Reserved.\n")
+  file(READ "${json_SOURCE_DIR}/LICENSES/Apache-2.0.txt" apache)
+  file(APPEND "${notices}" "${apache}\n")
+  file(READ "${zlib_SOURCE_DIR}/LICENSE" zlib_license)
+  file(APPEND "${notices}" "\nzlib\n${zlib_license}\n")
+  file(READ "${qrcodegen_SOURCE_DIR}/cpp/qrcodegen.hpp" qr_license)
+  string(FIND "${qr_license}" "*/" qr_end)
+  string(SUBSTRING "${qr_license}" 0 "${qr_end}" qr_notice)
+  file(APPEND "${notices}" "\nQR Code generator\n${qr_notice}*/\n")
   find_program(DPKG_SHLIBDEPS_EXECUTABLE dpkg-shlibdeps REQUIRED)
   install(TARGETS gw2-multi-launcher RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  # Optional .NET LTTng tracing requires an obsolete library absent on current Ubuntu.
-  install(DIRECTORY "${steam_output}/" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher/steam
-    USE_SOURCE_PERMISSIONS PATTERN "libcoreclrtraceptprovider.so" EXCLUDE)
-  install(FILES src/icons/gw2-multi-launcher.png DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  install(PROGRAMS "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/GW2MultiLauncher.Host.exe" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  install(FILES "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/GW2MultiLauncher.Native.dll" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  file(WRITE "${CMAKE_BINARY_DIR}/gw2-multi-launcher" "#!/bin/sh\nexec \"${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher/GW2MultiLauncher\" \"$@\"\n")
+  install(PROGRAMS "${GW2_STEAM_EXECUTABLE}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
+  install(FILES "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
+  install(PROGRAMS "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Host.exe" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
+  install(FILES "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Native.dll" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
+  file(WRITE "${CMAKE_BINARY_DIR}/gw2-multi-launcher" "#!/bin/sh\nexec \"${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher/${GW2_PROGRAM_FILE}\" \"$@\"\n")
   install(PROGRAMS "${CMAKE_BINARY_DIR}/gw2-multi-launcher" DESTINATION ${CMAKE_INSTALL_BINDIR})
   file(WRITE "${CMAKE_BINARY_DIR}/gw2-multi-launcher.desktop"
-    "[Desktop Entry]\nType=Application\nName=GW2 Multi Launcher\nComment=Launch your ArenaNet accounts\nExec=gw2-multi-launcher\nIcon=gw2-multi-launcher\nTerminal=false\nCategories=Game;\nStartupWMClass=GW2MultiLauncher\n")
+    "[Desktop Entry]\nType=Application\nName=${GW2_PRODUCT_NAME}\nComment=Launch your Anet accounts\nExec=gw2-multi-launcher\nIcon=gw2-multi-launcher\nTerminal=false\nCategories=Game;\nStartupWMClass=${GW2_PROGRAM_FILE}\n")
   install(FILES "${CMAKE_BINARY_DIR}/gw2-multi-launcher.desktop" DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
   install(FILES src/icons/gw2-multi-launcher.png DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps)
   install(FILES docs/README.md LICENSE "${notices}" DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/gw2-multi-launcher)
@@ -248,8 +339,9 @@ else()
     COMMAND "${CMAKE_CPACK_COMMAND}" --config "${CMAKE_BINARY_DIR}/CPackConfig.cmake" -C "${CMAKE_BUILD_TYPE}"
     DEPENDS ${setup_dependencies} "${CMAKE_BINARY_DIR}/CPackConfig.cmake" "${CMAKE_BINARY_DIR}/cmake_install.cmake"
       "${CMAKE_BINARY_DIR}/gw2-multi-launcher" "${CMAKE_BINARY_DIR}/gw2-multi-launcher.desktop"
-      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/GW2MultiLauncher.Host.exe"
-      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/GW2MultiLauncher.Native.dll" src/icons/gw2-multi-launcher.png
+      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Host.exe"
+      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Native.dll"
+      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     COMMENT "Building Debian package" VERBATIM)
 endif()

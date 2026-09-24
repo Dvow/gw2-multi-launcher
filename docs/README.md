@@ -12,7 +12,7 @@ cancels queued launches. Canceling account setup also kills that account's game.
   <img src="account-list.png" width="280" alt="Account list">
 </p>
 
-Add an account with ArenaNet, Steam, or Epic. You sign in once, then just launch.
+Add an account with Anet, Steam, or Epic. You sign in once, then just launch.
 
 Drag an account's header to reorder it. Release to save the order, or press Escape
 to cancel.
@@ -23,7 +23,7 @@ checkmark. Email prompts show which inbox to check. Verification automatically
 enables GW2's **Remember network** option.
 
 <p align="center">
-  <img src="arenanet.png" width="220" alt="Add an ArenaNet account">
+  <img src="arenanet.png" width="220" alt="Add an Anet account">
   <img src="steam.png" width="220" alt="Sign in to Steam">
   <img src="epic.png" width="220" alt="Sign in to Epic">
 </p>
@@ -66,12 +66,14 @@ Not an official ArenaNet app. Two-factor still works like a normal login.
 <details>
 <summary>Build</summary>
 
-CMake 3.30+, Ninja, and the .NET 10 SDK. Windows also needs MSVC x64 and the Windows SDK.
+CMake 3.30+ and Ninja. Windows also needs MSVC x64 and the Windows SDK.
 
 ```sh
 cmake --preset release
 cmake --build --preset release
 ```
+
+SDL, Dear ImGui, nlohmann/json, MinHook, zlib, and the QR Code generator come from hashed archives through CPM. They are stored in `.cpm` next to the source tree and reused by every build directory. Set `CPM_SOURCE_CACHE` to use another directory.
 
 The installer is written to `build/release`. On Windows, regular PowerShell works when the MSVC x64 and Windows SDK build environment is configured. Visual Studio's Developer PowerShell is one way to set that up; you do not need to switch terminals if your current session already builds successfully.
 

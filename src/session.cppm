@@ -48,9 +48,9 @@ inline std::string dllDirectories(const std::vector<std::string> &dlls) {
     return result;
 }
 inline std::unique_ptr<Process> gameRunner(const Catalog &c, const std::string &libraryDirectories) {
-    const auto helper = installed("GW2MultiLauncher.Host.exe");
+    const auto helper = installed(GW2_PROGRAM_FILE ".Host.exe");
     if (!std::filesystem::exists(helper) ||
-        !std::filesystem::exists(installed("GW2MultiLauncher.Native.dll")))
+        !std::filesystem::exists(installed(GW2_PROGRAM_FILE ".Native.dll")))
         throw std::runtime_error("The game helper is missing. Reinstall the complete launcher package.");
     std::vector<std::string> args{utf8(helper)};
     std::vector<std::pair<std::string, std::string>> env;
@@ -97,9 +97,9 @@ class SteamConnection {
     SteamConnection()
         : process_({utf8(installed(
 #ifdef _WIN32
-                       "steam/GW2MultiLauncher.Steam.exe"
+                       GW2_PROGRAM_FILE ".Steam.exe"
 #else
-                       "steam/GW2MultiLauncher.Steam"
+                       GW2_PROGRAM_FILE ".Steam"
 #endif
                        ))},
               {}) {

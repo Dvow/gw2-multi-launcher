@@ -1,14 +1,21 @@
 cmake_minimum_required(VERSION 3.30)
-project(GW2MultiLauncher VERSION 0.5.3 LANGUAGES C CXX)
+project(GW2MultiLauncher VERSION 0.6.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-include(FetchContent)
+if(NOT CPM_SOURCE_CACHE)
+  if(DEFINED ENV{CPM_SOURCE_CACHE} AND NOT "$ENV{CPM_SOURCE_CACHE}" STREQUAL "")
+    set(CPM_SOURCE_CACHE "$ENV{CPM_SOURCE_CACHE}" CACHE PATH "Directory to download CPM dependencies")
+  else()
+    set(CPM_SOURCE_CACHE "${CMAKE_SOURCE_DIR}/.cpm" CACHE PATH "Directory to download CPM dependencies")
+  endif()
+endif()
+include("${CMAKE_SOURCE_DIR}/cmake/CPM.cmake")
 
-# Dependencies stay in the build tree. Keep exact revisions and archive hashes.
+# Hashed archives live in the shared CPM cache. Keep the exact revisions and hashes.
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
 set(SDL_TESTS OFF CACHE BOOL "" FORCE)
@@ -17,22 +24,66 @@ set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 foreach(feature AUDIO CAMERA JOYSTICK HAPTIC SENSOR GPU RENDER WAYLAND HIDAPI POWER TRAY)
   set(SDL_${feature} OFF CACHE BOOL "" FORCE)
 endforeach()
-FetchContent_Declare(SDL3
+CPMAddPackage(
+  NAME SDL3
+  VERSION 3.4.16
   URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.16.tar.gz
-  URL_HASH SHA256=c2ee715e42ec520c4d11fd8d249ef1d2b2baf4ad31148b72b3b000276c0b3633)
-FetchContent_Declare(imgui
+  URL_HASH SHA256=c2ee715e42ec520c4d11fd8d249ef1d2b2baf4ad31148b72b3b000276c0b3633
+  EXCLUDE_FROM_ALL YES
+  SYSTEM YES)
+CPMAddPackage(
+  NAME imgui
   URL https://github.com/ocornut/imgui/archive/3bae66c735670619baf51391eba7f3d90a25d125.tar.gz
-  URL_HASH SHA256=0b99c7baed551f76058bc6fe83d806dc55c912280e9d2d268879a1c9751cef20)
+  URL_HASH SHA256=0b99c7baed551f76058bc6fe83d806dc55c912280e9d2d268879a1c9751cef20
+  DOWNLOAD_ONLY YES)
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(json
+CPMAddPackage(
+  NAME json
+  VERSION 3.12.0
   URL https://github.com/nlohmann/json/archive/refs/tags/v3.12.0.tar.gz
-  URL_HASH SHA256=4b92eb0c06d10683f7447ce9406cb97cd4b453be18d7279320f7b2f025c10187)
+  URL_HASH SHA256=4b92eb0c06d10683f7447ce9406cb97cd4b453be18d7279320f7b2f025c10187
+  EXCLUDE_FROM_ALL YES
+  SYSTEM YES)
 # Linux packages also carry the license for their Windows game helper.
-FetchContent_Declare(minhook
+CPMAddPackage(
+  NAME minhook
+  VERSION 1.3.4
   URL https://github.com/TsudaKageyu/minhook/archive/refs/tags/v1.3.4.tar.gz
   URL_HASH SHA256=1aebeae4ca898330c507860acc2fca2eb335fe446a3a2b8444c3bf8b2660a14e
-  SOURCE_SUBDIR source-only)
-FetchContent_MakeAvailable(SDL3 imgui json minhook)
+  DOWNLOAD_ONLY YES)
+CPMAddPackage(
+  NAME qrcodegen
+  VERSION 1.8.0
+  URL https://github.com/nayuki/QR-Code-generator/archive/refs/tags/v1.8.0.tar.gz
+  URL_HASH SHA256=2ec0a4d33d6f521c942eeaf473d42d5fe139abcfa57d2beffe10c5cf7d34ae60
+  DOWNLOAD_ONLY YES)
+set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ZLIB_INSTALL OFF CACHE BOOL "" FORCE)
+CPMAddPackage(
+  NAME zlib
+  VERSION 1.3.2
+  URL https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz
+  URL_HASH SHA256=b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1
+  EXCLUDE_FROM_ALL YES
+  SYSTEM YES
+  OPTIONS "ZLIB_BUILD_TESTING OFF" "ZLIB_BUILD_SHARED OFF" "ZLIB_BUILD_STATIC ON" "ZLIB_INSTALL OFF")
+foreach(json_header_patch
+    "include/nlohmann/detail/input/binary_reader.hpp|static inline bool little_endianness|inline bool little_endianness"
+    "include/nlohmann/detail/string_escape.hpp|static void unescape|inline void unescape")
+  string(REPLACE "|" ";" json_header_patch "${json_header_patch}")
+  list(GET json_header_patch 0 json_header)
+  list(GET json_header_patch 1 json_old)
+  list(GET json_header_patch 2 json_new)
+  set(json_header "${json_SOURCE_DIR}/${json_header}")
+  file(READ "${json_header}" json_text)
+  string(FIND "${json_text}" "${json_old}" json_at)
+  if(NOT json_at EQUAL -1)
+    string(REPLACE "${json_old}" "${json_new}" json_text "${json_text}")
+    file(WRITE "${json_header}" "${json_text}")
+  endif()
+endforeach()
 find_package(OpenGL REQUIRED)
 
 add_library(imgui STATIC
@@ -47,16 +98,13 @@ set_property(TARGET imgui PROPERTY CXX_SCAN_FOR_MODULES OFF)
 file(READ "${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf" font HEX)
 string(REGEX REPLACE "(..)" "0x\\1," font "${font}")
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/font.hpp" CONTENT "inline constexpr unsigned char launcherFont[] = {${font}};\n")
-if(NOT WIN32)
-  configure_file(src/icons/gw2-multi-launcher.png
-    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/gw2-multi-launcher.png" COPYONLY)
-endif()
 
 add_library(game STATIC)
 target_sources(game PUBLIC FILE_SET CXX_MODULES FILES src/game.cppm)
-add_executable(gw2-multi-launcher WIN32 src/main.cpp src/accounts.cpp src/epic.cpp src/update.cpp src/ui_surface.cpp)
-set_target_properties(gw2-multi-launcher PROPERTIES OUTPUT_NAME GW2MultiLauncher)
+add_executable(gw2-multi-launcher WIN32)
+target_sources(gw2-multi-launcher PRIVATE src/main.cpp)
 target_sources(gw2-multi-launcher PRIVATE FILE_SET CXX_MODULES FILES
+  src/data_folder.cppm src/ui_surface.cppm
   src/platform.cppm src/accounts.cppm src/epic.cppm src/session.cppm src/update.cppm src/app.cppm src/ui.cppm)
 target_compile_definitions(gw2-multi-launcher PRIVATE GW2_APP_VERSION="${PROJECT_VERSION}")
 target_include_directories(gw2-multi-launcher PRIVATE "${CMAKE_BINARY_DIR}")
@@ -66,39 +114,60 @@ set(gw2_app_icon "")
 if(EXISTS "${CMAKE_SOURCE_DIR}/private/Icon.cmake")
   include("${CMAKE_SOURCE_DIR}/private/Icon.cmake")
 endif()
+if(NOT GW2_PRODUCT_NAME)
+  set(GW2_PRODUCT_NAME "GW2 Multi Launcher")
+endif()
+if(NOT GW2_APP_ID)
+  set(GW2_APP_ID "GW2MultiLauncher")
+endif()
+if(NOT GW2_PROGRAM_FILE)
+  set(GW2_PROGRAM_FILE "GW2MultiLauncher")
+endif()
+if(NOT GW2_RELEASE_TITLE)
+  set(GW2_RELEASE_TITLE "Gw2 Multi")
+endif()
+file(WRITE "${CMAKE_BINARY_DIR}/release-title.txt" "${GW2_RELEASE_TITLE}\n")
+set_target_properties(gw2-multi-launcher PROPERTIES OUTPUT_NAME "${GW2_PROGRAM_FILE}")
+target_compile_definitions(gw2-multi-launcher PRIVATE GW2_PROGRAM_FILE="${GW2_PROGRAM_FILE}")
+if(NOT gw2_app_icon)
+  configure_file(src/icons/gw2-multi-launcher.png
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png" COPYONLY)
+endif()
 
-# Keep SteamKit dynamically replaceable, and isolate its runtime from the C++ UI.
+# The Steam helper is a separate process so a sign-in failure cannot take the UI with it.
 set(GW2_STEAM_DIR "" CACHE PATH "Pre-published Steam helper for the target operating system")
-set(steam_output "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/steam")
+set(steam_output "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+if(WIN32)
+  set(steam_executable "${GW2_PROGRAM_FILE}.Steam.exe")
+else()
+  set(steam_executable "${GW2_PROGRAM_FILE}.Steam")
+endif()
+set(GW2_STEAM_EXECUTABLE "${steam_output}/${steam_executable}")
 if(GW2_STEAM_DIR)
   file(GLOB_RECURSE steam_files CONFIGURE_DEPENDS RELATIVE "${GW2_STEAM_DIR}" "${GW2_STEAM_DIR}/*")
   foreach(file IN LISTS steam_files)
     configure_file("${GW2_STEAM_DIR}/${file}" "${steam_output}/${file}" COPYONLY)
   endforeach()
+  set(steam_setup_depends "${GW2_STEAM_EXECUTABLE}")
 else()
-  find_program(DOTNET_EXECUTABLE dotnet REQUIRED)
+  add_library(qrcodegen STATIC EXCLUDE_FROM_ALL "${qrcodegen_SOURCE_DIR}/cpp/qrcodegen.cpp")
+  target_include_directories(qrcodegen PUBLIC "${qrcodegen_SOURCE_DIR}/cpp")
+  set_property(TARGET qrcodegen PROPERTY CXX_SCAN_FOR_MODULES OFF)
+  add_executable(steam-helper)
+  target_sources(steam-helper PRIVATE FILE_SET CXX_MODULES FILES auth/steam.cppm)
+  set_target_properties(steam-helper PROPERTIES OUTPUT_NAME "${GW2_PROGRAM_FILE}.Steam"
+    RUNTIME_OUTPUT_DIRECTORY "${steam_output}")
+  target_compile_definitions(steam-helper PRIVATE GW2_PRODUCT_NAME="${GW2_PRODUCT_NAME}")
+  target_link_libraries(steam-helper PRIVATE qrcodegen ZLIB::ZLIBSTATIC nlohmann_json::nlohmann_json)
   if(WIN32)
-    set(steam_rid win-x64)
-    set(steam_executable GW2MultiLauncher.Steam.exe)
+    set_target_properties(steam-helper PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(steam-helper PRIVATE /ENTRY:mainCRTStartup)
+    target_link_libraries(steam-helper PRIVATE winhttp ws2_32 bcrypt)
   else()
-    set(steam_rid linux-x64)
-    set(steam_executable GW2MultiLauncher.Steam)
+    target_link_libraries(steam-helper PRIVATE OpenSSL::Crypto CURL::libcurl)
   endif()
-  set(steam_publish_args
-    publish "${CMAKE_SOURCE_DIR}/auth/GW2MultiLauncher.Steam.csproj"
-    -c Release -r ${steam_rid} --self-contained true --nologo
-    --artifacts-path "${CMAKE_BINARY_DIR}/auth" -o "${steam_output}")
-  set(steam_depends auth/GW2MultiLauncher.Steam.csproj auth/Program.cs auth/packages.lock.json)
-  if(WIN32 AND gw2_app_icon)
-    list(APPEND steam_publish_args "-p:ApplicationIcon=${gw2_app_icon}")
-    list(APPEND steam_depends "${gw2_app_icon}")
-  endif()
-  add_custom_command(OUTPUT "${steam_output}/${steam_executable}" "${steam_output}/GW2MultiLauncher.Steam.dll"
-    COMMAND "${DOTNET_EXECUTABLE}" ${steam_publish_args}
-    COMMAND "${CMAKE_COMMAND}" -E touch "${steam_output}/${steam_executable}" "${steam_output}/GW2MultiLauncher.Steam.dll"
-    DEPENDS ${steam_depends} VERBATIM)
-  add_custom_target(steam-auth DEPENDS "${steam_output}/${steam_executable}")
-  add_dependencies(gw2-multi-launcher steam-auth)
+  add_dependencies(gw2-multi-launcher steam-helper)
+  set(steam_setup_depends steam-helper)
 endif()
 
 if(WIN32)
@@ -174,33 +243,51 @@ if (-not ('Gw2ShellNotify' -as [type])) { Add-Type -TypeDefinition $signature }
 ]=])
   set_source_files_properties("${CMAKE_BINARY_DIR}/icon.rc" PROPERTIES OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/icon.ico")
   target_sources(gw2-multi-launcher PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
+  if(TARGET steam-helper)
+    target_sources(steam-helper PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
+  endif()
   if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Use MSVC x64 for the Windows native bridge.")
   endif()
   target_link_libraries(gw2-multi-launcher PRIVATE crypt32 bcrypt winhttp shell32 ole32 user32)
   add_subdirectory(${minhook_SOURCE_DIR} ${minhook_BINARY_DIR} EXCLUDE_FROM_ALL)
-  add_library(GW2MultiLauncher.Native SHARED native/Bridge.cpp)
+  add_library(GW2MultiLauncher.Native SHARED)
+  target_sources(GW2MultiLauncher.Native PRIVATE FILE_SET CXX_MODULES FILES native/Bridge.cppm)
+  set_target_properties(GW2MultiLauncher.Native PROPERTIES OUTPUT_NAME "${GW2_PROGRAM_FILE}.Native")
   target_link_libraries(GW2MultiLauncher.Native PRIVATE game minhook user32 advapi32 bcrypt comctl32)
   target_sources(GW2MultiLauncher.Native PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
-  add_executable(GW2MultiLauncher.Host WIN32 native/Host.cpp)
+  add_executable(GW2MultiLauncher.Host WIN32)
+  target_sources(GW2MultiLauncher.Host PRIVATE FILE_SET CXX_MODULES FILES native/Host.cppm)
+  set_target_properties(GW2MultiLauncher.Host PROPERTIES OUTPUT_NAME "${GW2_PROGRAM_FILE}.Host")
   target_link_libraries(GW2MultiLauncher.Host PRIVATE game GW2MultiLauncher.Native user32 bcrypt)
   target_sources(GW2MultiLauncher.Host PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
   target_link_options(GW2MultiLauncher.Host PRIVATE /ENTRY:mainCRTStartup)
   set(native_targets GW2MultiLauncher.Native GW2MultiLauncher.Host)
+  add_executable(uninstall-stub WIN32)
+  target_sources(uninstall-stub PRIVATE FILE_SET CXX_MODULES FILES src/uninstall_stub.cppm)
+  target_sources(uninstall-stub PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
+  set_target_properties(uninstall-stub PROPERTIES OUTPUT_NAME uninstall-stub
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+  target_compile_definitions(uninstall-stub PRIVATE GW2_PRODUCT_NAME="${GW2_PRODUCT_NAME}")
+  target_link_options(uninstall-stub PRIVATE /ENTRY:mainCRTStartup)
   foreach(target IN ITEMS gw2-multi-launcher ${native_targets})
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_BINARY_DIR}/icon-refresh.ps1" "$<TARGET_FILE:${target}>"
       VERBATIM)
   endforeach()
-  if(TARGET steam-auth AND steam_executable)
-    add_custom_command(TARGET steam-auth POST_BUILD
+  if(TARGET steam-helper)
+    add_custom_command(TARGET steam-helper POST_BUILD
       COMMAND "${POWERSHELL_EXECUTABLE}" -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_BINARY_DIR}/icon-refresh.ps1"
-        "${steam_output}/${steam_executable}"
+        -File "${CMAKE_BINARY_DIR}/icon-refresh.ps1" "$<TARGET_FILE:steam-helper>"
       VERBATIM)
   endif()
-  foreach(target IN ITEMS gw2-multi-launcher game ${native_targets})
+  set(warned_targets gw2-multi-launcher game ${native_targets})
+  if(TARGET steam-helper)
+    list(APPEND warned_targets steam-helper)
+  endif()
+  list(APPEND warned_targets uninstall-stub)
+  foreach(target IN LISTS warned_targets)
     target_compile_options(${target} PRIVATE /W4 /WX /permissive- /utf-8 /guard:cf /sdl)
     target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_options(${target} PRIVATE /guard:cf /DYNAMICBASE /NXCOMPAT)
@@ -215,7 +302,7 @@ else()
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endforeach()
   set(GW2_NATIVE_DIR "" CACHE PATH "Directory containing matching Windows helper and bridge built from this source")
-  foreach(file GW2MultiLauncher.Host.exe GW2MultiLauncher.Native.dll)
+  foreach(file "${GW2_PROGRAM_FILE}.Host.exe" "${GW2_PROGRAM_FILE}.Native.dll")
     if(NOT EXISTS "${GW2_NATIVE_DIR}/${file}")
       message(FATAL_ERROR "Set GW2_NATIVE_DIR to a matching Windows build's bin directory; missing ${file}.")
     endif()

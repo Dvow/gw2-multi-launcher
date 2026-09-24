@@ -23,10 +23,11 @@ module;
 #include <variant>
 #include <vector>
 #include "font.hpp"
-#include "ui_surface.hpp"
 
 export module ui;
 import platform;
+import ui_surface;
+import data_folder;
 import accounts;
 import app;
 import update;
@@ -465,7 +466,7 @@ struct Form {
     void finish(App &app, const Snapshot &state, bool &open) {
         if (auto command = std::get_if<Command>(&next); command &&
             (command->action == Action::close || command->action == Action::closeAll ||
-                command->action == Action::cancelSetup)) {
+                command->action == Action::cancelSetup || command->action == Action::launch)) {
             // Process termination must not wait for saving an unrelated form.
             auto intent = std::move(*command);
             next = std::monostate{};
@@ -558,6 +559,7 @@ struct Form {
     }
 };
 
+ImRect brandHitRect(float scale);
 SDL_HitTestResult SDLCALL hitTest(SDL_Window *window, const SDL_Point *point, void *) {
     int w{}, h{};
     SDL_GetWindowSize(window, &w, &h);
@@ -577,6 +579,7 @@ SDL_HitTestResult SDLCALL hitTest(SDL_Window *window, const SDL_Point *point, vo
     const ImVec2 position{static_cast<float>(point->x), static_cast<float>(point->y)};
     for (int i = 0; i < 3; ++i)
         if (headerButton(i, static_cast<float>(w), scale).Contains(position)) return SDL_HITTEST_NORMAL;
+    if (brandHitRect(scale).Contains(position)) return SDL_HITTEST_NORMAL;
     return SDL_HITTEST_DRAGGABLE;
 }
 void publicStyle(ImGuiStyle &s) {
@@ -629,11 +632,17 @@ void style(float scale) {
     if (const auto apply = surface::active().style) {
         apply(s);
         s.WindowRounding = 0;
+        s.ChildRounding = 7;
+        s.ChildBorderSize = 0;
         s.HoverDelayShort = 0.3f;
+        s.FramePadding = {9, 6};
+        s.ItemSpacing = {8, 8};
+        s.ScrollbarSize = 6;
     } else {
         s = ImGuiStyle{};
         publicStyle(s);
     }
+    s.SelectableRounding = 7;
     s.ScaleAllSizes(scale);
     s.FontScaleDpi = scale;
 }
@@ -832,10 +841,10 @@ void removeAccount(Form &form) {
     ImGui::SameLine();
     if (iconButton(Icon::close, "Cancel removal")) form.removing = false;
 }
-void accountFields(const Account *account, App &app, Form &form, const Snapshot &state, float width,
+void accountFields(const Account *account, Form &form, const Snapshot &state, float width,
     SDL_Window *window) {
     form.edited |= rowField("Nickname", form.label, width, "Optional");
-    const char *providers[]{"ArenaNet", "Steam", "Epic"};
+    const char *providers[]{"Anet", "Steam", "Epic"};
     float labels{};
     for (auto provider : providers)
         labels += ImGui::CalcTextSize(provider).x;
@@ -856,7 +865,7 @@ void accountFields(const Account *account, App &app, Form &form, const Snapshot 
     }
     ImGui::PopStyleVar();
     if (form.provider == Provider::arenaNet) {
-        form.edited |= rowField("Email", form.email, width, form.loading ? "Opening…" : "ArenaNet email");
+        form.edited |= rowField("Email", form.email, width, form.loading ? "Opening…" : "Anet email");
         form.edited |= rowField("Password", form.password, width, form.id.empty() ? "Password" : "Keep saved",
             ImGuiInputTextFlags_Password | ImGuiInputTextFlags_NoUndoRedo);
     } else {
@@ -869,12 +878,7 @@ void accountFields(const Account *account, App &app, Form &form, const Snapshot 
         removeAccount(form);
         return;
     }
-    if (!account) {
-        ImGui::BeginDisabled(!form.canSave(state));
-        if (iconButton(Icon::check, "Add account", true)) form.save(app, state.catalog);
-        ImGui::EndDisabled();
-        return;
-    }
+    if (!account) return;
     form.removing = iconButton(Icon::remove, "Remove account");
 }
 
@@ -926,16 +930,15 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         return;
     }
     const bool selected = account && form.isSelected(id);
+    const ImVec4 idle{20 / 255.f, 24 / 255.f, 29 / 255.f, 1};
     auto draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(row, {row.x + width, row.y + total},
-        ImGui::GetColorU32(selected ? ImGui::GetStyleColorVec4(ImGuiCol_Header)
-                                    : ImVec4{20 / 255.f, 24 / 255.f, 29 / 255.f, 1}),
-        7 * scale);
+        ImGui::GetColorU32(selected ? ImGui::GetStyleColorVec4(ImGuiCol_Header) : idle), 7 * scale);
     if (selected || floating)
         draw->AddRect(row, {row.x + width, row.y + total}, ImGui::GetColorU32(ink().accent), 7 * scale);
     const ImVec2 pos{row.x + inset, row.y + 8 * scale};
     const auto available = width - 2 * inset;
-    const auto textWidth = available - (account ? 72 : 36) * scale;
+    const auto textWidth = available - 72 * scale;
     ImGui::SetCursorScreenPos(pos);
     const char *title = "Add account";
     if (account)
@@ -947,9 +950,12 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     if (state.catalog.showPid && session.active && session.pid)
         std::snprintf(pid, sizeof(pid), " · %u", session.pid);
     const auto pidWidth = ImGui::CalcTextSize(pid).x;
+    const bool queued = account && state.launchQueued(id);
+    const bool thisLaunch = queued || session.blocking();
     const bool error = session.state == 6 ||
         (!session.active && session.status != "Ready" && session.status != "Client exited");
     const auto status = !account ? "Choose how you sign in"
+        : queued                 ? "Queued"
         : error                  ? "Needs attention"
                                  : session.status.c_str();
     const auto statusWidth = std::min(ImGui::CalcTextSize(status).x, textWidth - pidWidth);
@@ -964,7 +970,9 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     const ImVec2 actions{pos.x + available - 64 * scale, row.y + (header - 28 * scale) / 2};
     ImGui::SetCursorScreenPos(actions);
     if (account) {
-        ImGui::BeginDisabled(session.active ? !session.canClose() : busy);
+        ImGui::BeginDisabled(session.active ? !session.canClose()
+                                            : thisLaunch || form.pending || form.picker || !state.ready ||
+                state.updating());
         if (iconButton(session.active ? Icon::close : expanded ? Icon::collapse : Icon::edit,
                 session.active ? "Kill game process"
                     : expanded ? "Close editor"
@@ -979,9 +987,13 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::BeginDisabled(session.active ? !session.canShow : busy || expanded);
-        if (iconButton(
-                session.active ? Icon::show : Icon::play, session.active ? "Show game" : "Launch account")) {
+        const bool updating = state.updating();
+        const char *launchTip = "Launch account";
+        if (session.active) launchTip = "Show game";
+        if (!session.active && queued) launchTip = "Queued";
+        ImGui::BeginDisabled(session.active ? !session.canShow
+                                            : updating || form.picker || !state.ready || queued || expanded);
+        if (iconButton(session.active ? Icon::show : Icon::play, launchTip)) {
             form.request({.action = session.active ? Action::show : Action::launch, .id = id, .ids = {id}});
         }
         ImGui::EndDisabled();
@@ -1010,7 +1022,11 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         ImGui::EndDisabled();
         ImGui::PopStyleColor(3);
     } else {
-        ImGui::SetCursorScreenPos({pos.x + available - 28 * scale, actions.y});
+        ImGui::SetCursorScreenPos(actions);
+        ImGui::BeginDisabled(busy || reveal < 1 || !form.canSave(state));
+        if (iconButton(Icon::check, "Add account", true)) form.save(app, state.catalog);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
         ImGui::BeginDisabled(busy);
         if (iconButton(Icon::close, "Cancel new account")) form.go(Form::Page::accounts);
         ImGui::EndDisabled();
@@ -1018,21 +1034,29 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     if (expanded) {
         auto window = ImGui::GetCurrentWindow();
         const auto measured = window->DC.CursorMaxPos;
+        const bool fieldOnHighlight = selected && surface::active().style;
+        if (fieldOnHighlight) {
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, idle);
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, idle);
+            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, idle);
+        }
         ImGui::PushClipRect({row.x, row.y + header}, {row.x + width, row.y + total}, true);
         ImGui::SetCursorScreenPos({pos.x, row.y + header + 4 * scale});
         ImGui::BeginGroup();
-        ImGui::BeginDisabled(form.pending || reveal < 1 || (!registration && !verification && busy));
+        const bool lockEditor = form.pending || form.picker || !state.ready || state.updating() || thisLaunch;
+        ImGui::BeginDisabled(reveal < 1 || (!registration && !verification && lockEditor));
         if (verification)
             verificationFields(form, session, available,
                 form.focusVerification && form.verificationId == id && reveal == 1 && !form.pending && !form.picker);
         else if (registration)
             registrationFields(form, id, available);
         else
-            accountFields(account, app, form, state, available, nativeWindow);
+            accountFields(account, form, state, available, nativeWindow);
         ImGui::EndDisabled();
         ImGui::EndGroup();
         storage->SetFloat(heightId, ImGui::GetItemRectMax().y - (row.y + header) + 10 * scale);
         ImGui::PopClipRect();
+        if (fieldOnHighlight) ImGui::PopStyleColor(3);
         // Measure the complete form, but publish only its revealed height to the list.
         // This keeps animation from creating a second scrolling region or a premature scroll extent.
         window->DC.CursorMaxPos = measured;
@@ -1107,22 +1131,149 @@ void accountList(App &app, Form &form, const Snapshot &state, SDL_Window *native
     }
 }
 
-void shortcuts(Form &form, bool busy) {
-    if (busy) return;
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N)) form.go(Form::Page::account);
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Comma)) form.go(Form::Page::settings);
+void shortcuts(Form &form, bool busy, bool settingsLocked) {
+    if (!busy && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N)) form.go(Form::Page::account);
+    if (!settingsLocked && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Comma)) form.go(Form::Page::settings);
     if (form.page != Form::Page::accounts && ImGui::IsKeyPressed(ImGuiKey_Escape))
         form.go(Form::Page::accounts);
 }
-void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
+unsigned brandTexture = 0;
+int brandTexels = 0;
+struct Covered {
+    float r{}, g{}, b{}, a{};
+};
+Covered coveredPixel(const unsigned char *pixels, int pitch, int width, int height, float x0, float y0,
+    float x1, float y1) {
+    Covered sum;
+    float weight = 0;
+    const int ix0 = static_cast<int>(x0);
+    const int iy0 = static_cast<int>(y0);
+    const int ix1 = std::min(width - 1, static_cast<int>(std::ceil(x1)) - 1);
+    const int iy1 = std::min(height - 1, static_cast<int>(std::ceil(y1)) - 1);
+    for (int iy = iy0; iy <= iy1; ++iy) {
+        const float rowWeight = std::min(iy + 1.f, y1) - std::max(static_cast<float>(iy), y0);
+        const auto *row = pixels + static_cast<std::size_t>(iy) * pitch;
+        for (int ix = ix0; ix <= ix1; ++ix) {
+            const float sampleWeight = rowWeight * (std::min(ix + 1.f, x1) - std::max(static_cast<float>(ix), x0));
+            const auto *pixel = row + ix * 4;
+            const float alpha = pixel[3] / 255.f;
+            sum.r += pixel[0] * alpha * sampleWeight;
+            sum.g += pixel[1] * alpha * sampleWeight;
+            sum.b += pixel[2] * alpha * sampleWeight;
+            sum.a += alpha * sampleWeight;
+            weight += sampleWeight;
+        }
+    }
+    if (weight <= 0) return sum;
+    sum.r /= weight;
+    sum.g /= weight;
+    sum.b /= weight;
+    sum.a /= weight;
+    return sum;
+}
+void storeCovered(unsigned char *pixel, const Covered &sample) {
+    const float alpha = std::clamp(sample.a, 0.f, 1.f);
+    pixel[3] = static_cast<unsigned char>(std::lround(alpha * 255.f));
+    if (alpha <= 0) return;
+    pixel[0] = static_cast<unsigned char>(std::lround(std::clamp(sample.r / alpha, 0.f, 255.f)));
+    pixel[1] = static_cast<unsigned char>(std::lround(std::clamp(sample.g / alpha, 0.f, 255.f)));
+    pixel[2] = static_cast<unsigned char>(std::lround(std::clamp(sample.b / alpha, 0.f, 255.f)));
+}
+std::vector<unsigned char> fitIcon(const unsigned char *pixels, int pitch, int width, int height, int size) {
+    std::vector<unsigned char> fitted(static_cast<std::size_t>(size) * size * 4);
+    for (int y = 0; y < size; ++y) {
+        const float y0 = y * static_cast<float>(height) / size;
+        const float y1 = (y + 1.f) * height / size;
+        for (int x = 0; x < size; ++x) {
+            const float x0 = x * static_cast<float>(width) / size;
+            const float x1 = (x + 1.f) * width / size;
+            storeCovered(fitted.data() + (static_cast<std::size_t>(y) * size + x) * 4,
+                coveredPixel(pixels, pitch, width, height, x0, y0, x1, y1));
+        }
+    }
+    return fitted;
+}
+unsigned loadBrandTexture(int texels) {
+    const auto base = SDL_GetBasePath();
+    if (!base) return 0;
+    const auto file = std::string(base) + GW2_PROGRAM_FILE ".png";
+    auto image = std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)>(
+        SDL_LoadPNG(file.c_str()), SDL_DestroySurface);
+    if (!image) return 0;
+    auto converted = std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)>(
+        SDL_ConvertSurface(image.get(), SDL_PIXELFORMAT_RGBA32), SDL_DestroySurface);
+    if (!converted || !converted->pixels || converted->w < 1 || converted->h < 1) return 0;
+    const auto *pixels = static_cast<const unsigned char *>(converted->pixels);
+    std::vector<unsigned char> fitted;
+    int uploadW = converted->w, uploadH = converted->h;
+    if (texels > 0 && texels < converted->w && texels < converted->h) {
+        fitted = fitIcon(pixels, converted->pitch, converted->w, converted->h, texels);
+        pixels = fitted.data();
+        uploadW = uploadH = texels;
+    }
+    unsigned texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, uploadW, uploadH, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texture;
+}
+void ensureBrandTexture(SDL_Window *window) {
+    int points = 0, pixels = 0;
+    SDL_GetWindowSize(window, &points, nullptr);
+    if (points <= 0) return;
+    SDL_GetWindowSizeInPixels(window, &pixels, nullptr);
+    const float frame = static_cast<float>(pixels) / static_cast<float>(points);
+    const int texels =
+        std::max(1, static_cast<int>(std::lround(24.f * ImGui::GetStyle().FontScaleDpi * frame)));
+    if (brandTexture && texels == brandTexels) return;
+    if (brandTexture) glDeleteTextures(1, &brandTexture);
+    brandTexture = loadBrandTexture(texels);
+    brandTexels = brandTexture ? texels : 0;
+}
+float sideInset(float scale) {
+    if (!ImGui::GetCurrentContext()) return 8.f * scale;
+    return ImGui::GetStyle().WindowPadding.x;
+}
+ImRect brandHitRect(float scale) {
+    const float x = sideInset(scale);
+    const float mark = 24 * scale;
+    const float y = (headerHeight * scale - mark) / 2;
+    if (brandTexture || !ImGui::GetCurrentContext()) return {{x, y}, {x + mark, y + mark}};
+    const auto size = ImGui::CalcTextSize(surface::active().brand);
+    const float textY = (headerHeight * scale - size.y) / 2;
+    return {{x, textY}, {x + size.x, textY + size.y}};
+}
+void openHome(Form &form) {
+    const auto *url = surface::active().home;
+    if (!url || !*url) return;
+    if (!SDL_OpenURL(url)) form.localError = "Could not open the link.";
+}
+void header(Form &form, SDL_Window *window, bool settingsLocked, bool updateAvailable) {
+    ensureBrandTexture(window);
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const auto width = ImGui::GetWindowWidth();
-    ImGui::SetCursorPos({14 * scale, (headerHeight * scale - ImGui::GetTextLineHeight()) / 2});
-    ImGui::TextUnformatted(surface::active().brand);
+    const float textY = (headerHeight * scale - ImGui::GetTextLineHeight()) / 2;
+    const auto mark = brandHitRect(scale);
+    ImGui::SetCursorPos(mark.Min);
+    if (brandTexture)
+        ImGui::Image(static_cast<ImTextureID>(brandTexture), mark.GetSize());
+    else
+        ImGui::TextUnformatted(surface::active().brand);
+    ImGui::SetCursorPos(mark.Min);
+    if (ImGui::InvisibleButton("##home", mark.GetSize())) openHome(form);
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     ImGui::SameLine();
+    ImGui::SetCursorPosY(textY);
     mutedText(surface::active().brandRest);
     ImGui::SetCursorPos(headerButton(0, width, scale).Min);
-    ImGui::BeginDisabled(busy);
+    ImGui::BeginDisabled(settingsLocked);
     if (iconButton(form.page != Form::Page::settings ? Icon::settings : Icon::back,
             form.page == Form::Page::settings ? "Back to accounts"
                 : updateAvailable             ? "Settings · Update available"
@@ -1141,9 +1292,10 @@ void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
     if (iconButton(Icon::minimize, "Minimize")) SDL_MinimizeWindow(window);
     ImGui::SetCursorPos(headerButton(2, width, scale).Min);
     if (iconButton(Icon::close, "Close launcher. Games keep running.")) form.go(Form::Page::exit);
-    ImGui::SetCursorPos({14 * scale, headerHeight * scale});
+    const auto inset = sideInset(scale);
+    ImGui::SetCursorPos({inset, headerHeight * scale});
     ImGui::Separator();
-    ImGui::SetCursorPos({14 * scale, (headerHeight + 8) * scale});
+    ImGui::SetCursorPos({inset, (headerHeight + 8) * scale});
 }
 void toolbar(Form &form, const Snapshot &state, bool busy) {
     if (form.page == Form::Page::settings) {
@@ -1168,13 +1320,14 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
     ImGui::BeginDisabled(busy);
     if (iconButton(Icon::add, "Add account")) form.go(Form::Page::account);
     pulseOutline(form.addAccountHintSince);
+    ImGui::EndDisabled();
     ImGui::SameLine(0, iconSpacing * scale);
     const bool editingRequested = page == Form::Page::account && !form.id.empty() &&
         (form.selected.empty() || form.isSelected(form.id));
-    ImGui::BeginDisabled(state.catalog.accounts.empty() || editingRequested);
+    ImGui::BeginDisabled(state.catalog.accounts.empty() || editingRequested || state.updating() ||
+        !state.ready || form.picker);
     if (iconButton(Icon::playAll, form.selected.empty() ? "Launch all" : "Launch selected"))
         form.launch(state.catalog);
-    ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (closeAll) {
         ImGui::SameLine(0, iconSpacing * scale);
@@ -1250,7 +1403,7 @@ void updatePrompt(Form &form, const Snapshot &state, bool busy) {
     if (!ImGui::BeginPopupModal("Update available", nullptr,
             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings))
         return;
-    ImGui::TextWrapped("GW2 Multi %s is available.", update.version.c_str());
+    ImGui::TextWrapped("%s %s is available.", gw2ProductName(), update.version.c_str());
     const bool running = std::ranges::any_of(state.sessions, &SessionView::active);
     if (running) ImGui::TextWrapped("Close your games before updating.");
     ImGui::BeginDisabled(busy || state.auth.busy || running);
@@ -1271,6 +1424,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     form.rowsMoving = false;
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const bool busy = form.pending || form.picker || state.busy || !state.ready;
+    const bool settingsLocked = form.pending || form.picker || !state.ready || state.updating();
     const bool gamePathHint = state.error.selectGame && form.localError.empty() && !busy;
     if (!gamePathHint)
         form.gamePathHintSince = -1;
@@ -1286,14 +1440,14 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     ImGui::SetNextWindowPos(vp->Pos);
     ImGui::SetNextWindowSize(vp->Size);
     ImGui::SetNextWindowViewport(vp->ID);
-    ImGui::Begin("GW2 Multi Launcher", nullptr,
+    ImGui::Begin(gw2ProductName(), nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollWithMouse);
     surface::paint(surface::Insert::beforeHeader);
     if (surface::shown(surface::Part::header))
-        header(form, window, busy, state.update.stage == UpdateStage::available);
+        header(form, window, settingsLocked, state.update.stage == UpdateStage::available);
     surface::paint(surface::Insert::afterHeader);
-    shortcuts(form, busy);
+    shortcuts(form, busy, settingsLocked);
     const auto &message = form.localError.empty() ? state.error.message : form.localError;
     const auto page = form.page;
     const bool accounts = page != Form::Page::settings;
@@ -1334,7 +1488,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
             accountRow(nullptr, app, form, state, window, accountLayout(nullptr, form, state));
         if (surface::shown(surface::Part::accounts)) accountList(app, form, state, window, busy);
     } else {
-        ImGui::BeginDisabled(busy || form.page != page);
+        ImGui::BeginDisabled(settingsLocked || form.page != page);
         if (surface::shown(surface::Part::settings)) settingsPage(form, state, window);
         ImGui::EndDisabled();
         surface::paint(surface::Insert::settingsTail);
@@ -1459,7 +1613,7 @@ auto createWindow() {
     const auto display = SDL_GetPrimaryDisplay();
     const float scale = std::max(1.0f, SDL_GetDisplayContentScale(display));
     auto window = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>(
-        SDL_CreateWindow("GW2 Multi Launcher", static_cast<int>(360 * scale), static_cast<int>(480 * scale),
+        SDL_CreateWindow(gw2ProductName(), static_cast<int>(360 * scale), static_cast<int>(480 * scale),
             SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY |
                 SDL_WINDOW_HIDDEN),
         SDL_DestroyWindow);
@@ -1468,7 +1622,7 @@ auto createWindow() {
     // Windows uses SDL's embedded ICO resource so the shell can select the matching size.
     const auto base = SDL_GetBasePath();
     if (!base) throw std::runtime_error(SDL_GetError());
-    const auto iconFile = std::string(base) + "gw2-multi-launcher.png";
+    const auto iconFile = std::string(base) + GW2_PROGRAM_FILE ".png";
     auto icon = std::unique_ptr<SDL_Surface, decltype(&SDL_DestroySurface)>(
         SDL_LoadPNG(iconFile.c_str()), SDL_DestroySurface);
     if (!icon || !SDL_SetWindowIcon(window.get(), icon.get())) throw std::runtime_error(SDL_GetError());
@@ -1495,7 +1649,7 @@ export namespace gw2 {
 int run() {
     using namespace presentation;
     SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "none");
-    SDL_SetHint(SDL_HINT_APP_NAME, "GW2 Multi Launcher");
+    SDL_SetHint(SDL_HINT_APP_NAME, gw2ProductName());
     if (!SDL_Init(SDL_INIT_VIDEO)) throw std::runtime_error(SDL_GetError());
     struct Sdl {
         ~Sdl() { SDL_Quit(); }
@@ -1521,10 +1675,21 @@ int run() {
         }
     } gui;
     surface::install();
+    struct SurfaceLifetime {
+        ~SurfaceLifetime() {
+            if (const auto stop = surface::active().shutdown) stop();
+        }
+    } surfaceLifetime;
     setupFonts(scale);
     if (!(gui.platform = ImGui_ImplSDL3_InitForOpenGL(window.get(), context)) ||
         !(gui.renderer = ImGui_ImplOpenGL3_Init("#version 130")))
         throw std::runtime_error("Could not initialize the launcher renderer.");
+    struct Brand {
+        ~Brand() {
+            if (brandTexture) glDeleteTextures(1, &brandTexture);
+            brandTexture = 0;
+        }
+    } brand;
     App app;
     Form form;
     bool open = true;
@@ -1532,6 +1697,7 @@ int run() {
     WindowState observed;
     std::shared_ptr<const Snapshot> previous;
     while (open) {
+        if (const auto poll = surface::active().poll) poll();
         if (!pollEvents(app, form, window.get(), context)) form.go(Form::Page::exit);
         const auto snapshot = app.snapshot();
         if (snapshot != previous) {

@@ -1,4 +1,5 @@
 /build/
+/.cpm/
 CMakeUserPresets.json
 *.user
 *.dmp

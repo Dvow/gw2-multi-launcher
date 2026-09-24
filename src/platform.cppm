@@ -16,7 +16,6 @@ module;
 #include <string_view>
 #include <utility>
 #include <vector>
-#include "data_folder.hpp"
 #ifdef _WIN32
 #include <windows.h>
 #include <wincrypt.h>
@@ -30,12 +29,14 @@ module;
 #include <unistd.h>
 #include <libsecret/secret.h>
 #include <openssl/evp.h>
+#include <openssl/params.h>
 #include <openssl/rand.h>
 #include <curl/curl.h>
 #endif
 
 export module platform;
 import game;
+import data_folder;
 
 export namespace gw2 {
 inline void wipe(void *memory, std::size_t size) noexcept {
@@ -198,14 +199,14 @@ class FileLock {
             FILE_ATTRIBUTE_NORMAL, nullptr);
         if (value_ == INVALID_HANDLE_VALUE)
             throw std::runtime_error(
-                "GW2 Multi Launcher is already open, or the account directory is not writable.");
+                std::string(gw2ProductName()) + " is already open, or the account directory is not writable.");
 #else
         value_ = open(file.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
         if (value_ < 0) throw std::runtime_error("Cannot open the account directory lock.");
         if (flock(value_, LOCK_EX | LOCK_NB)) {
             close(value_);
             value_ = -1;
-            throw std::runtime_error("GW2 Multi Launcher is already open.");
+            throw std::runtime_error(std::string(gw2ProductName()) + " is already open.");
         }
 #endif
     }
@@ -334,7 +335,7 @@ Secret keyring(bool create, std::stop_token stop) {
     } clear{encoded};
     KeyringReply saved;
     secret_password_store(
-        &schema, SECRET_COLLECTION_DEFAULT, "GW2 Multi Launcher", encoded.c_str(), cancel,
+        &schema, SECRET_COLLECTION_DEFAULT, gw2ProductName(), encoded.c_str(), cancel,
         +[](GObject *, GAsyncResult *result, gpointer data) {
             auto &r = *static_cast<KeyringReply *>(data);
             r.stored = secret_password_store_finish(result, &r.error);
@@ -352,9 +353,10 @@ Secret crypt(std::span<const unsigned char> input, bool encrypt, bool create, st
 #ifdef _WIN32
     (void)create;
     DATA_BLOB source{static_cast<DWORD>(input.size()), const_cast<BYTE *>(input.data())}, output{};
+    const auto description = utf16(std::string(gw2ProductName()) + " account");
     bool ok = encrypt
-        ? CryptProtectData(&source, L"GW2 Multi Launcher account", nullptr, nullptr, nullptr,
-              CRYPTPROTECT_UI_FORBIDDEN, &output)
+        ? CryptProtectData(&source, reinterpret_cast<const wchar_t *>(description.bytes.data()), nullptr, nullptr,
+              nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output)
         : CryptUnprotectData(&source, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output);
     if (!ok)
         throw std::runtime_error("Windows could not open this account. Use the Windows user who saved it.");
@@ -540,17 +542,36 @@ class Process {
     }
 };
 
+struct HttpHeader {
+    std::string name, value;
+};
+struct HttpOptions {
+    std::span<const HttpHeader> headers{};
+    std::span<const std::string_view> responseHeaders{};
+};
 struct HttpReply {
     unsigned status{};
     Secret body;
+    std::vector<HttpHeader> headers;
 };
 HttpReply https(std::string_view host, std::string_view resource, std::string_view authorization,
-    std::string_view body, std::stop_token stop, std::size_t limit = 32768) {
+    std::string_view body, std::stop_token stop, std::size_t limit = 32768, HttpOptions options = {}) {
     cancelled(stop);
+    const auto headerName = [](std::string_view name) {
+        return !name.empty() && name.size() <= 128 &&
+            name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-") == name.npos;
+    };
+    for (const auto &header : options.headers)
+        if (!headerName(header.name) || header.value.size() > 4096 ||
+            std::ranges::any_of(header.value, [](unsigned char c) { return c < 32 || c == 127; }))
+            throw std::runtime_error("Invalid request header.");
+    for (const auto name : options.responseHeaders)
+        if (!headerName(name)) throw std::runtime_error("Invalid response header name.");
     HttpReply reply;
     auto &response = reply.body.bytes;
-    response.reserve(32768);
-    const bool download = host == "github.com" && authorization.empty() && body.empty();
+    response.reserve(std::min<std::size_t>(limit, 32768));
+    reply.headers.reserve(options.responseHeaders.size());
+    const bool download = host == "github.com" && authorization.empty() && body.empty() && options.headers.empty();
 #ifdef _WIN32
     struct Internet {
         HINTERNET value{};
@@ -571,6 +592,8 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
         headerText += authorization;
         headerText += "\r\n";
     }
+    for (const auto &header : options.headers)
+        headerText += header.name + ": " + header.value + "\r\n";
     auto headers = utf16(headerText);
     wipe(headerText.data(), headerText.size());
     Internet connection{WinHttpConnect(session.value, reinterpret_cast<const wchar_t *>(server.bytes.data()),
@@ -581,8 +604,9 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
                                       : nullptr};
     DWORD policy = download ? WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP
                             : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-    if (request.value)
-        WinHttpSetOption(request.value, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
+    if (request.value &&
+        !WinHttpSetOption(request.value, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy)))
+        throw std::runtime_error("Could not set the secure redirect policy.");
     if (!request.value ||
         !WinHttpSendRequest(request.value, reinterpret_cast<const wchar_t *>(headers.bytes.data()),
             static_cast<DWORD>(headers.bytes.size() / 2 - 1), const_cast<char *>(body.data()),
@@ -594,6 +618,23 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
             &status, &size, nullptr))
         throw std::runtime_error("Invalid service response.");
     reply.status = status;
+    // Keep duplicate proof headers visible so authenticated callers can reject ambiguity.
+    for (const auto name : options.responseHeaders) {
+        auto wideName = utf16(name);
+        DWORD index{};
+        for (;;) {
+            std::array<wchar_t, 2048> value{};
+            DWORD bytes = static_cast<DWORD>(sizeof(value));
+            if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_CUSTOM,
+                    reinterpret_cast<const wchar_t *>(wideName.bytes.data()), value.data(), &bytes, &index)) {
+                if (GetLastError() == ERROR_WINHTTP_HEADER_NOT_FOUND) break;
+                throw std::runtime_error("Invalid service response header.");
+            }
+            if (reply.headers.size() >= 32) throw std::runtime_error("Too many service response headers.");
+            reply.headers.push_back({std::string(name), fromUtf16(
+                {reinterpret_cast<const unsigned char *>(value.data()), bytes + sizeof(wchar_t)})});
+        }
+    }
     const auto deadline = SDL_GetTicks() + (download ? 600000 : 10000);
     Secret buffer(16384);
     for (;;) {
@@ -627,6 +668,12 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
     auth += authorization;
     headers.value = curl_slist_append(headers.value, auth.c_str());
     wipe(auth.data(), auth.size());
+    for (const auto &header : options.headers) {
+        const auto text = header.name + ": " + header.value;
+        auto appended = curl_slist_append(headers.value, text.c_str());
+        if (!appended) throw std::runtime_error("Could not allocate request headers.");
+        headers.value = appended;
+    }
     curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers.value);
     if (!body.empty()) {
         curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, body.data());
@@ -657,6 +704,39 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
             }
         });
     curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &output);
+    struct HeaderOutput {
+        std::vector<HttpHeader> &headers;
+        std::span<const std::string_view> names;
+    } headerOutput{reply.headers, options.responseHeaders};
+    if (!options.responseHeaders.empty()) {
+        curl_easy_setopt(curl.get(), CURLOPT_HEADERFUNCTION,
+            +[](char *data, std::size_t size, std::size_t count, void *context) -> std::size_t {
+                const auto length = size * count;
+                auto &out = *static_cast<HeaderOutput *>(context);
+                try {
+                    const std::string_view line(data, length);
+                    if (line.starts_with("HTTP/")) out.headers.clear();
+                    const auto colon = line.find(':');
+                    if (colon == line.npos) return length;
+                    const auto name = line.substr(0, colon);
+                    const auto lower = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; };
+                    for (const auto wanted : out.names) {
+                        if (!std::ranges::equal(name, wanted, {}, lower, lower)) continue;
+                        auto value = line.substr(colon + 1);
+                        const auto first = value.find_first_not_of(" \t");
+                        value.remove_prefix(first == value.npos ? value.size() : first);
+                        const auto last = value.find_last_not_of(" \t\r\n");
+                        value = value.substr(0, last == value.npos ? 0 : last + 1);
+                        if (value.size() > 4096 || out.headers.size() >= 32) return 0;
+                        out.headers.push_back({std::string(wanted), std::string(value)});
+                    }
+                    return length;
+                } catch (...) {
+                    return 0;
+                }
+            });
+        curl_easy_setopt(curl.get(), CURLOPT_HEADERDATA, &headerOutput);
+    }
     curl_easy_setopt(curl.get(), CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(
         curl.get(), CURLOPT_XFERINFOFUNCTION,
@@ -672,6 +752,27 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
 #endif
     cancelled(stop);
     return reply;
+}
+std::array<unsigned char, 32> hmacSha256(
+    std::span<const unsigned char> key, std::span<const unsigned char> bytes) {
+    std::array<unsigned char, 32> digest{};
+#ifdef _WIN32
+    const bool ok = BCryptHash(BCRYPT_HMAC_SHA256_ALG_HANDLE,
+        const_cast<unsigned char *>(key.data()), static_cast<ULONG>(key.size()),
+        const_cast<unsigned char *>(bytes.data()), static_cast<ULONG>(bytes.size()),
+        digest.data(), static_cast<ULONG>(digest.size())) == 0;
+#else
+    auto mac = std::unique_ptr<EVP_MAC, decltype(&EVP_MAC_free)>(EVP_MAC_fetch(nullptr, "HMAC", nullptr), EVP_MAC_free);
+    auto context = std::unique_ptr<EVP_MAC_CTX, decltype(&EVP_MAC_CTX_free)>(
+        mac ? EVP_MAC_CTX_new(mac.get()) : nullptr, EVP_MAC_CTX_free);
+    OSSL_PARAM params[]{OSSL_PARAM_construct_utf8_string("digest", const_cast<char *>("SHA256"), 0),
+        OSSL_PARAM_construct_end()};
+    const bool ok = context && EVP_MAC_init(context.get(), key.data(), key.size(), params) == 1 &&
+        EVP_MAC_update(context.get(), bytes.data(), bytes.size()) == 1 &&
+        EVP_MAC_final(context.get(), digest.data(), nullptr, digest.size()) == 1;
+#endif
+    if (!ok) throw std::runtime_error("Could not verify the service response.");
+    return digest;
 }
 std::string sha256(std::span<const unsigned char> bytes) {
     std::array<unsigned char, 32> digest{};
