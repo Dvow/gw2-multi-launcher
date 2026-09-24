@@ -249,6 +249,7 @@ struct Form {
     };
     std::variant<std::monostate, Destination, Command> next;
     double changedAt{-1};
+    double settingsHintSince{-1};
     bool rowsMoving{}, scrollToNew{};
     std::vector<std::string> selected;
     std::string id, localError, notifiedUpdate;
@@ -286,7 +287,9 @@ struct Form {
         if ((page == Page::settings) != (target == Page::settings)) changedAt = ImGui::GetTime();
         page = target;
     }
-    bool transitioning() const { return rowsMoving || ImGui::GetTime() - changedAt < 0.16; }
+    bool animating() const {
+        return rowsMoving || settingsHintSince >= 0 || ImGui::GetTime() - changedAt < 0.16;
+    }
     float opacity() const {
         const auto t = static_cast<float>(std::clamp((ImGui::GetTime() - changedAt) / 0.16, 0.0, 1.0));
         return 0.35f + 0.65f * t * t * (3 - 2 * t);
@@ -373,10 +376,10 @@ struct Form {
         if (!pending || snapshot.completed < pending) return;
         pending = 0;
         loading = false;
-        if (!snapshot.error.empty()) {
+        if (!snapshot.error.message.empty()) {
             next = std::monostate{};
             if (pendingAction == Action::save || pendingAction == Action::settings)
-                localError = "Changes were not saved. " + snapshot.error;
+                localError = "Changes were not saved. " + snapshot.error.message;
             return;
         }
         if (pendingAction == Action::edit && snapshot.editId == id) assign(email, snapshot.editEmail);
@@ -1082,6 +1085,15 @@ void header(Form &form, SDL_Window *window, bool busy, bool updateAvailable) {
                                               : "Settings")) {
         form.go(form.page != Form::Page::settings ? Form::Page::settings : Form::Page::accounts);
     }
+    if (form.settingsHintSince >= 0) {
+        auto color = accent;
+        color.w = 0.8f * static_cast<float>(0.5 - 0.5 * std::cos(
+            (ImGui::GetTime() - form.settingsHintSince) * 3.141592653589793));
+        const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddRect({min.x + scale, min.y + scale},
+            {max.x - scale, max.y - scale}, ImGui::GetColorU32(color),
+            ImGui::GetStyle().FrameRounding, 1.25f * scale);
+    }
     if (updateAvailable && form.page != Form::Page::settings) {
         const auto edge = ImGui::GetItemRectMax();
         ImGui::GetWindowDrawList()->AddCircleFilled(
@@ -1222,6 +1234,12 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     form.rowsMoving = false;
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const bool busy = form.pending || form.picker || state.busy || !state.ready;
+    const bool settingsHint = state.error.selectGame && form.localError.empty() &&
+        form.page != Form::Page::settings && !busy;
+    if (!settingsHint)
+        form.settingsHintSince = -1;
+    else if (form.settingsHintSince < 0)
+        form.settingsHintSince = ImGui::GetTime();
     auto vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->Pos);
     ImGui::SetNextWindowSize(vp->Size);
@@ -1230,7 +1248,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollWithMouse);
     header(form, window, busy, state.update.stage == UpdateStage::available);
-    const auto message = form.localError.empty() ? state.error : form.localError;
+    const auto &message = form.localError.empty() ? state.error.message : form.localError;
     const auto page = form.page;
     const bool accounts = page != Form::Page::settings;
     toolbar(form, state, busy);
@@ -1345,8 +1363,9 @@ bool pollEvents(App &app, Form &form, SDL_Window *window, SDL_GLContext context)
     const auto &gui = *ImGui::GetCurrentContext();
     const bool tooltipPending =
         gui.HoverItemDelayId && gui.HoverItemDelayTimer < ImGui::GetStyle().HoverDelayShort;
-    if (SDL_WaitEventTimeout(
-            &event, io.WantTextInput || io.MouseDown[0] || form.transitioning() || tooltipPending ? 8 : 125))
+    const bool interactive = !(SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) &&
+        (io.WantTextInput || io.MouseDown[0] || form.animating() || tooltipPending);
+    if (SDL_WaitEventTimeout(&event, interactive ? 8 : 125))
         do {
             ImGui_ImplSDL3_ProcessEvent(&event);
             if (event.type == SDL_EVENT_QUIT ||

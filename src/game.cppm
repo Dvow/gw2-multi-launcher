@@ -15,6 +15,9 @@ export module game;
 
 export namespace gw2 {
 using Bytes = std::vector<unsigned char>;
+struct GamePathRequired : std::runtime_error {
+    GamePathRequired() : std::runtime_error("Select your installed Gw2-64.exe in Settings.") {}
+};
 struct Anchor {
     std::uint32_t rva{}, size{};
     std::array<unsigned char, 128> bytes{};
@@ -264,7 +267,7 @@ class Image {
   public:
     explicit Image(const std::filesystem::path &path) {
         std::ifstream stream(path, std::ios::binary | std::ios::ate);
-        if (!stream) throw std::runtime_error("Select your installed Gw2-64.exe in Settings.");
+        if (!stream) throw GamePathRequired{};
         const auto size = stream.tellg();
         if (size < 4096 || size > 256 * 1024 * 1024) invalid();
         bytes_.resize(static_cast<std::size_t>(size));

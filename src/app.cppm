@@ -80,7 +80,11 @@ struct Snapshot {
     Catalog catalog;
     AppUpdate update;
     std::vector<SessionView> sessions;
-    std::string error, editId, editEmail;
+    struct Error {
+        std::string message;
+        bool selectGame{};
+    } error;
+    std::string editId, editEmail;
     std::uint64_t completed{};
     bool ready{}, busy{}, fatal{}, launchesQueued{};
     const SessionView *session(std::string_view id) const {
@@ -118,6 +122,9 @@ class App {
     std::future<AppUpdate> updateTask_;
     std::jthread worker_;
 
+    void reportError(const std::exception &error) {
+        state_.error = {error.what(), dynamic_cast<const GamePathRequired *>(&error) != nullptr};
+    }
     void publish() {
         state_.auth.connected = !connectedSession_.bytes.empty();
         state_.sessions.clear();
@@ -377,7 +384,7 @@ class App {
     }
     void closeSession(Session &session) {
         if (!session.view.canClose()) return;
-        if (state_.error == session.view.status) state_.error.clear();
+        if (state_.error.message == session.view.status) state_.error = {};
         session.view.closing = true;
         session.view.canShow = false;
         session.view.status = "Terminating…";
@@ -472,7 +479,7 @@ class App {
     void execute(Command command, std::stop_token stop) {
         if (command.action != Action::close && command.action != Action::closeAll &&
             command.action != Action::cancelSetup) {
-            state_.error.clear();
+            state_.error = {};
             state_.editId.clear();
             state_.editEmail.clear();
         }
@@ -490,7 +497,7 @@ class App {
                 epic_.reset();
                 state_.auth.busy = false;
             }
-            state_.error = e.what();
+            reportError(e);
             launches_.clear();
         }
         state_.completed = command.serial;
@@ -559,7 +566,7 @@ class App {
                 throw std::runtime_error("Unexpected Steam helper response.");
             }
         } catch (const std::exception &e) {
-            state_.error = e.what();
+            reportError(e);
             state_.auth.busy = state_.auth.code = false;
             state_.auth.qr.clear();
             state_.auth.prompt.clear();
@@ -599,7 +606,7 @@ class App {
             session.failed = true;
             session.view.status = failure(detail);
             launches_.clear();
-            state_.error = session.view.status;
+            state_.error = {session.view.status};
         } else if (!session.failed) {
             constexpr const char *statuses[]{"", "Starting…", "Signing in…", "Opening game…", "Running",
                 "Client exited", "", "Updating GW2…", "Updated", "Choose a GW2 display name",
@@ -668,7 +675,7 @@ class App {
                 session.view.state = 6;
                 session.view.canShow = true;
                 session.view.status = "The game helper timed out before opening the game. Select Show or Close.";
-                state_.error = session.view.status;
+                state_.error = {session.view.status};
                 launches_.clear();
                 changed = true;
             }
@@ -686,7 +693,10 @@ class App {
             if (!session.failed || session.view.closing) {
                 session.view.status = session.view.closing
                     ? "Could not confirm that GW2 exited. " + std::string(e.what()) : e.what();
-                state_.error = session.view.status;
+                if (session.view.closing)
+                    state_.error = {session.view.status};
+                else
+                    reportError(e);
             }
             session.failed = true;
             session.view.active = session.view.canShow = session.view.closing = false;
@@ -709,7 +719,7 @@ class App {
         try {
             store_->window(*pending);
         } catch (const std::exception &e) {
-            state_.error = e.what();
+            reportError(e);
         }
         return true;
     }
@@ -750,7 +760,7 @@ class App {
             if (store_->catalog().autoUpdate) beginUpdate(false, stop);
             publish();
         } catch (const std::exception &e) {
-            state_.error = e.what();
+            reportError(e);
             state_.fatal = true;
             publish();
             return;
@@ -776,7 +786,7 @@ class App {
                 try {
                     start(std::move(id), stop);
                 } catch (const std::exception &e) {
-                    state_.error = e.what();
+                    reportError(e);
                     launches_.clear();
                     change = true;
                 }
@@ -828,7 +838,7 @@ void App::prepare(std::stop_token stop) {
     const auto &catalog = store_->catalog();
     const auto file = path(catalog.gamePath);
     if (!file.is_absolute() || lower(utf8(file.filename())) != "gw2-64.exe")
-        throw std::runtime_error("Select your installed Gw2-64.exe in Settings.");
+        throw GamePathRequired{};
     if (!std::filesystem::exists(file.parent_path() / "Gw2.dat"))
         throw std::runtime_error("Finish installing GW2 first; Gw2.dat must be beside Gw2-64.exe.");
     publish();
