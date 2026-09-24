@@ -147,7 +147,7 @@ try {
   if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Use MSVC x64 for the Windows native bridge.")
   endif()
-  target_link_libraries(gw2-multi-launcher PRIVATE crypt32 bcrypt winhttp shell32 ole32 user32)
+  target_link_libraries(gw2-multi-launcher PRIVATE crypt32 bcrypt winhttp shell32 ole32 user32 psapi)
   add_subdirectory(${minhook_SOURCE_DIR} ${minhook_BINARY_DIR} EXCLUDE_FROM_ALL)
   add_library(GW2MultiLauncher.Native SHARED native/Bridge.cpp)
   target_link_libraries(GW2MultiLauncher.Native PRIVATE game minhook user32 advapi32 bcrypt comctl32)
