@@ -30,6 +30,12 @@ function(gw2_fetch_innosetup destination)
   endif()
 endfunction()
 
+if(NOT GW2_SETUP_BASENAME)
+  set(GW2_SETUP_BASENAME "gw2-multi-launcher_${PROJECT_VERSION}_win-x64_setup")
+endif()
+if(NOT GW2_DEB_FILE_NAME)
+  set(GW2_DEB_FILE_NAME "gw2-multi-launcher_${PROJECT_VERSION}_amd64")
+endif()
 set(setup_dependencies gw2-multi-launcher ${native_targets} ${steam_setup_depends}
   src/icons/gw2-multi-launcher.png ${GW2_SETUP_DEPENDS})
 
@@ -78,7 +84,7 @@ RestartApplications=no
 UninstallDisplayName=@GW2_PRODUCT_NAME@
 UninstallDisplayIcon={app}\@GW2_PROGRAM_FILE@.exe
 OutputDir=@CMAKE_BINARY_DIR@
-OutputBaseFilename=gw2-multi-launcher_@PROJECT_VERSION@_win-x64_setup
+OutputBaseFilename=@GW2_SETUP_BASENAME@
 Compression=lzma2/max
 SolidCompression=yes
 
@@ -193,7 +199,7 @@ end;
 ]=])
   string(CONFIGURE "${setup}" setup @ONLY)
   file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/setup.iss" CONTENT "${setup}")
-  set(setup_file "${CMAKE_BINARY_DIR}/gw2-multi-launcher_${PROJECT_VERSION}_win-x64_setup.exe")
+  set(setup_file "${CMAKE_BINARY_DIR}/${GW2_SETUP_BASENAME}.exe")
   add_custom_command(OUTPUT "${setup_file}"
     COMMAND "${GW2_ISCC}" /Qp "${CMAKE_BINARY_DIR}/setup.iss"
     DEPENDS ${setup_dependencies} "${CMAKE_BINARY_DIR}/setup.iss" "${CMAKE_BINARY_DIR}/icon.ico"
@@ -236,7 +242,7 @@ else()
   set(CPACK_PACKAGE_CONTACT "GW2 Multi Launcher contributors")
   set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Compact native Guild Wars 2 account launcher")
   set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
-  set(CPACK_PACKAGE_FILE_NAME "gw2-multi-launcher_${PROJECT_VERSION}_amd64")
+  set(CPACK_PACKAGE_FILE_NAME "${GW2_DEB_FILE_NAME}")
   set(CPACK_PACKAGING_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
   set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE amd64)
   set(CPACK_DEBIAN_PACKAGE_SECTION games)

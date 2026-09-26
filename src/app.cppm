@@ -132,6 +132,7 @@ class App {
     std::optional<EpicConnection> epic_;
     Secret connectedSession_;
     std::future<AppUpdate> updateTask_;
+    std::chrono::steady_clock::time_point updateDue_{std::chrono::steady_clock::time_point::max()};
     std::jthread worker_;
 
     void reportError(const std::exception &error) {
@@ -777,12 +778,17 @@ class App {
         if (!updateTask_.valid() ||
             updateTask_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
             return false;
+        const bool quiet = state_.update.stage != UpdateStage::checking &&
+            state_.update.stage != UpdateStage::installing;
         try {
             state_.update = updateTask_.get();
         } catch (const std::exception &e) {
-            state_.update.stage = state_.update.version.empty() ? UpdateStage::idle : UpdateStage::available;
-            state_.update.error = e.what();
+            if (state_.update.stage == UpdateStage::checking || state_.update.stage == UpdateStage::installing)
+                state_.update.stage = state_.update.version.empty() ? UpdateStage::idle : UpdateStage::available;
+            if (!quiet) state_.update.error = e.what();
         }
+        if (state_.update.stage != UpdateStage::installing && state_.update.stage != UpdateStage::installed)
+            updateDue_ = std::chrono::steady_clock::now() + std::chrono::minutes(5);
         return true;
     }
     void run(std::stop_token stop) {
@@ -811,6 +817,14 @@ class App {
             }
             bool change = saveWindow();
             change |= pollUpdate();
+            if (appUpdatesEnabled() && store_ && store_->catalog().autoUpdate &&
+                std::chrono::steady_clock::now() >= updateDue_ && !updateTask_.valid() &&
+                state_.update.stage != UpdateStage::checking &&
+                state_.update.stage != UpdateStage::installing &&
+                state_.update.stage != UpdateStage::installed) {
+                updateTask_ = std::async(std::launch::async, [stop] { return checkAppUpdate(stop); });
+                updateDue_ = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+            }
             change |= pollAuthentication(stop);
             for (auto &session : sessions_)
                 if (session.view.active) change |= poll(session, stop);

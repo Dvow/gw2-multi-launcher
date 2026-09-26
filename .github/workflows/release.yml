@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   windows:
-    if: github.event.repository.name == 'gw2-multi-launcher'
+    if: github.event.repository.fork == false
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -29,6 +29,8 @@ jobs:
           dotnet-version: 10.0.x
       - name: Build Windows installer and game helpers
         shell: pwsh
+        env:
+          KX_DOWNLOAD_HEADER_VALUE: ${{ secrets.KX_DOWNLOAD_HEADER_VALUE }}
         run: |
           $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
           Import-Module "$vs/Common7/Tools/Microsoft.VisualStudio.DevShell.dll"
@@ -41,7 +43,7 @@ jobs:
         with:
           name: windows-installer
           path: |
-            build/release/*_win-x64_setup.exe
+            build/release/*setup.exe
             build/release/release-title.txt
           if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -143,7 +145,13 @@ jobs:
             gh release create "$tag" --draft --target "$GITHUB_SHA" \
               --title "$product $tag" --generate-notes
           fi
-          gh release upload "$tag" "build/release/gw2-multi-launcher_${version}_win-x64_setup.exe" \
-            "build/release/gw2-multi-launcher_${version}_amd64.deb" --clobber
+          shopt -s nullglob
+          setups=(build/release/*setup.exe)
+          debs=(build/release/*_amd64.deb)
+          if [ "${#setups[@]}" -ne 1 ] || [ "${#debs[@]}" -ne 1 ]; then
+            echo "Expected one setup and one deb." >&2
+            exit 1
+          fi
+          gh release upload "$tag" "${setups[0]}" "${debs[0]}" --clobber
           publish_metadata
           gh release edit "$tag" --title "$product $tag" --target "$GITHUB_SHA" --draft=false --latest

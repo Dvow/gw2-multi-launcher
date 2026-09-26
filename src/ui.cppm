@@ -1376,7 +1376,7 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     if (!updateNotice.empty()) ImGui::TextWrapped("%.*s", static_cast<int>(updateNotice.size()), updateNotice.data());
     ImGui::BeginDisabled(!appUpdatesEnabled());
     form.edited |= ImGui::Checkbox("Check automatically", &form.autoUpdate);
-    help("Check for launcher updates each time you open the app.");
+    help("Check for launcher updates while the app is open.");
     const auto &update = state.update;
     const bool available = update.stage == UpdateStage::available;
     ImGui::BeginDisabled(update.busy());
@@ -1399,8 +1399,8 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
 
 void updatePrompt(Form &form, const Snapshot &state, bool busy) {
     const auto &update = state.update;
-    if (update.stage == UpdateStage::available && form.notifiedUpdate != update.version && !busy &&
-        !state.auth.busy && !form.edited && form.page != Form::Page::account && !ImGui::IsAnyItemActive()) {
+    if (update.stage == UpdateStage::available && form.notifiedUpdate != update.version && state.ready &&
+        !form.picker && !form.pending && !state.auth.busy && !ImGui::IsAnyItemActive()) {
         ImGui::OpenPopup("Update available");
         form.notifiedUpdate = update.version;
     }

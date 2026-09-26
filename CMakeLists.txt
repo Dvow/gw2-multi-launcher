@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.30)
-project(GW2MultiLauncher VERSION 0.6.5 LANGUAGES CXX)
+project(GW2MultiLauncher VERSION 0.7.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
