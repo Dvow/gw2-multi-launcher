@@ -53,6 +53,15 @@ void mutedText(const char *text) {
     ImGui::TextUnformatted(text);
     ImGui::PopStyleColor();
 }
+void centerButtons(std::initializer_list<const char *> labels) {
+    const auto pad = ImGui::GetStyle().FramePadding.x * 2;
+    float row{};
+    for (const auto *label : labels) {
+        if (row) row += ImGui::GetStyle().ItemSpacing.x;
+        row += ImGui::CalcTextSize(label).x + pad;
+    }
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (ImGui::GetContentRegionAvail().x - row) * 0.5f));
+}
 void centeredText(const char *text, bool muted = false) {
     const auto avail = ImGui::GetContentRegionAvail().x;
     const auto width = ImGui::CalcTextSize(text).x;
@@ -288,7 +297,8 @@ struct Form {
     std::array<char, 2049> args{};
     std::vector<std::string> dlls;
     std::array<char, 32761> game{}, runner{}, prefix{}, proton{};
-    bool hide{}, showPid{}, alwaysOnTop{}, autoUpdate{true}, removing{}, loading{}, edited{}, connected{};
+    bool hide{}, showPid{}, alwaysOnTop{}, autoUpdate{}, askedAutoUpdate{}, removing{}, loading{}, edited{},
+        connected{};
     std::uint64_t pending{};
     Action pendingAction{};
     std::shared_ptr<Picker> picker;
@@ -1399,8 +1409,9 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
 
 void updatePrompt(Form &form, const Snapshot &state, bool busy) {
     const auto &update = state.update;
-    if (update.stage == UpdateStage::available && form.notifiedUpdate != update.version && state.ready &&
-        !form.picker && !form.pending && !state.auth.busy && !ImGui::IsAnyItemActive()) {
+    if (update.stage == UpdateStage::available && state.catalog.autoUpdateAsked &&
+        form.notifiedUpdate != update.version && state.ready && !form.picker && !form.pending &&
+        !state.auth.busy && !ImGui::IsAnyItemActive()) {
         ImGui::OpenPopup("Update available");
         form.notifiedUpdate = update.version;
     }
@@ -1408,13 +1419,16 @@ void updatePrompt(Form &form, const Snapshot &state, bool busy) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, {0.5f, 0.5f});
     ImGui::SetNextWindowSize({std::min(300 * scale, viewport->Size.x - 28 * scale), 0});
-    if (!ImGui::BeginPopupModal("Update available", nullptr,
-            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings))
-        return;
-    ImGui::TextWrapped("%s %s is available.", gw2ProductName(), update.version.c_str());
-    const bool running = std::ranges::any_of(state.sessions, &SessionView::active);
-    if (running) ImGui::TextWrapped("Close your games before updating.");
-    ImGui::BeginDisabled(busy || state.auth.busy || running);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, {0.5f, 0.5f});
+    const bool open = ImGui::BeginPopupModal("Update available", nullptr,
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
+    if (!open) return;
+    char message[160];
+    std::snprintf(message, sizeof message, "%s %s is available.", gw2ProductName(), update.version.c_str());
+    centeredText(message);
+    centerButtons({"Update now", "Later"});
+    ImGui::BeginDisabled(busy || state.auth.busy);
     if (button("Update now", 0, ink().primary)) {
         form.openSettings(state.catalog);
         form.request({.action = Action::installUpdate});
@@ -1423,6 +1437,33 @@ void updatePrompt(Form &form, const Snapshot &state, bool busy) {
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (button("Later")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+void autoUpdatePrompt(Form &form, const Snapshot &state) {
+    if (!state.catalog.autoUpdateAsked && !form.askedAutoUpdate && appUpdatesEnabled() && state.ready &&
+        !form.picker && !form.pending && !state.auth.busy && !ImGui::IsAnyItemActive())
+        ImGui::OpenPopup("Check automatically");
+    const auto viewport = ImGui::GetMainViewport();
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, {0.5f, 0.5f});
+    ImGui::SetNextWindowSize({std::min(300 * scale, viewport->Size.x - 28 * scale), 0});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, {0.5f, 0.5f});
+    const bool open = ImGui::BeginPopupModal("Check automatically", nullptr,
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
+    if (!open) return;
+    centeredText("Check for launcher updates automatically?");
+    centerButtons({"Yes", "No"});
+    const auto choose = [&](bool enable) {
+        form.autoUpdate = enable;
+        form.askedAutoUpdate = true;
+        form.request({.action = Action::automaticUpdates, .enable = enable});
+        ImGui::CloseCurrentPopup();
+    };
+    if (button("Yes", 0, ink().primary)) choose(true);
+    ImGui::SameLine();
+    if (button("No")) choose(false);
     ImGui::EndPopup();
 }
 
@@ -1505,7 +1546,10 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     ImGui::EndChild();
     ImGui::PopID();
     ImGui::PopStyleVar();
-    if (surface::shown(surface::Part::updatePrompt)) updatePrompt(form, state, busy);
+    if (surface::shown(surface::Part::updatePrompt)) {
+        autoUpdatePrompt(form, state);
+        updatePrompt(form, state, busy);
+    }
     // Consume this frame's input before saving or acting on a navigation request.
     form.finish(app, state, open);
     ImGui::End();
@@ -1656,6 +1700,8 @@ void setupFonts(float scale) {
 export namespace gw2 {
 int run() {
     using namespace presentation;
+    const auto instance = acquireInstance();
+    if (!instance) return 0;
     SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "none");
     SDL_SetHint(SDL_HINT_APP_NAME, gw2ProductName());
     if (!SDL_Init(SDL_INIT_VIDEO)) throw std::runtime_error(SDL_GetError());

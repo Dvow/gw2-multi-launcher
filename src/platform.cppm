@@ -185,6 +185,21 @@ inline std::filesystem::path dataRoot() {
 #endif
     return root;
 }
+inline std::filesystem::path catalogRoot() {
+#ifdef _WIN32
+    if (gw2CatalogUsesDocuments()) {
+        PWSTR documents{};
+        if (FAILED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_CREATE, nullptr, &documents)) || !documents)
+            throw std::runtime_error("Cannot find the Documents directory.");
+        std::filesystem::path root(documents);
+        CoTaskMemFree(documents);
+        root /= gw2ConfigFolder();
+        std::filesystem::create_directories(root);
+        return root;
+    }
+#endif
+    return dataRoot();
+}
 class FileLock {
 #ifdef _WIN32
     HANDLE value_{INVALID_HANDLE_VALUE};
@@ -197,8 +212,9 @@ class FileLock {
         value_ = CreateFileW(file.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
             FILE_ATTRIBUTE_NORMAL, nullptr);
         if (value_ == INVALID_HANDLE_VALUE)
-            throw std::runtime_error(
-                std::string(gw2ProductName()) + " is already open, or the account directory is not writable.");
+            throw std::runtime_error(GetLastError() == ERROR_SHARING_VIOLATION
+                    ? std::string(gw2ProductName()) + " is already open."
+                    : "Cannot open the account directory.");
 #else
         value_ = open(file.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
         if (value_ < 0) throw std::runtime_error("Cannot open the account directory lock.");
@@ -219,6 +235,39 @@ class FileLock {
 #endif
     }
 };
+inline bool revealRunningLauncher() {
+#ifndef _WIN32
+    return false;
+#else
+    const auto title = utf16(gw2ProductName());
+    struct Search {
+        const wchar_t *title;
+        HWND window{};
+        static BOOL CALLBACK next(HWND window, LPARAM parameter) {
+            auto &search = *reinterpret_cast<Search *>(parameter);
+            if (GetWindow(window, GW_OWNER)) return TRUE;
+            wchar_t text[256]{};
+            if (GetWindowTextW(window, text, 256) <= 0 || wcscmp(text, search.title)) return TRUE;
+            search.window = window;
+            return FALSE;
+        }
+    } search{reinterpret_cast<const wchar_t *>(title.bytes.data())};
+    EnumWindows(Search::next, reinterpret_cast<LPARAM>(&search));
+    if (!search.window) return false;
+    ShowWindow(search.window, IsIconic(search.window) ? SW_RESTORE : SW_SHOW);
+    SetForegroundWindow(search.window);
+    return true;
+#endif
+}
+inline std::unique_ptr<FileLock> acquireInstance() {
+    try {
+        return std::make_unique<FileLock>(dataRoot() / "instance.lock");
+    } catch (const std::exception &error) {
+        if (std::string_view(error.what()).ends_with(" is already open.") && revealRunningLauncher())
+            return {};
+        throw;
+    }
+}
 inline void atomicWrite(const std::filesystem::path &file, std::string_view contents) {
     auto temporary = file;
     temporary += "." + identifier() + ".tmp";
@@ -782,4 +831,86 @@ std::string latestBuild(std::stop_token stop) {
         throw std::runtime_error("The GW2 update service is unavailable. Try again shortly.");
     return std::string(reply.body.text());
 }
+
+struct LaunchedGame {
+    unsigned pid{};
+    std::uint64_t started{};
+    bool reachable{true};
+};
+#ifdef _WIN32
+struct ProcessHandle {
+    HANDLE value{};
+    ProcessHandle(DWORD pid, DWORD access) : value(OpenProcess(access, FALSE, pid)) {}
+    ~ProcessHandle() {
+        if (value) CloseHandle(value);
+    }
+    ProcessHandle(const ProcessHandle &) = delete;
+    ProcessHandle &operator=(const ProcessHandle &) = delete;
+};
+std::uint64_t processStarted(HANDLE process) {
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(process, &created, &exited, &kernel, &user)) return 0;
+    ULARGE_INTEGER stamp{};
+    stamp.LowPart = created.dwLowDateTime;
+    stamp.HighPart = created.dwHighDateTime;
+    return stamp.QuadPart;
+}
+bool isGw2(HANDLE process) {
+    wchar_t image[32768]{};
+    DWORD length = 32767;
+    if (!QueryFullProcessImageNameW(process, 0, image, &length)) return false;
+    return _wcsicmp(std::filesystem::path(image).filename().c_str(), L"Gw2-64.exe") == 0;
+}
+LaunchedGame launchedGame(unsigned pid) {
+    if (!pid) return {};
+    ProcessHandle process(pid, PROCESS_QUERY_LIMITED_INFORMATION);
+    if (!process.value)
+        return GetLastError() == ERROR_INVALID_PARAMETER ? LaunchedGame{} : LaunchedGame{.pid = pid, .reachable = false};
+    if (!isGw2(process.value)) return {};
+    const auto started = processStarted(process.value);
+    if (!started) return {};
+    return {pid, started};
+}
+bool endLaunchedGame(unsigned pid, std::uint64_t started) {
+    if (!pid || !started) return false;
+    ProcessHandle process(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE);
+    if (!process.value) return GetLastError() == ERROR_INVALID_PARAMETER;
+    if (WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0) return true;
+    if (!isGw2(process.value) || processStarted(process.value) != started) return false;
+    return TerminateProcess(process.value, 1) || WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0;
+}
+struct GameWindows {
+    DWORD pid{};
+    HWND login{}, game{}, dialog{};
+};
+BOOL CALLBACK launchedWindow(HWND window, LPARAM parameter) {
+    auto &seen = *reinterpret_cast<GameWindows *>(parameter);
+    DWORD owner{};
+    GetWindowThreadProcessId(window, &owner);
+    if (owner != seen.pid) return TRUE;
+    wchar_t name[128]{};
+    GetClassNameW(window, name, 128);
+    if (!wcscmp(name, L"ArenaNet") && !GetWindow(window, GW_OWNER))
+        seen.login = window;
+    else if (!wcscmp(name, L"ArenaNet_Gr_Window_Class"))
+        seen.game = window;
+    else if (IsWindowVisible(window) &&
+        (!wcscmp(name, L"#32770") || (!wcscmp(name, L"ArenaNet") && GetWindow(window, GW_OWNER))))
+        seen.dialog = window;
+    return TRUE;
+}
+void showLaunchedGame(unsigned pid, std::uint64_t started) {
+    if (launchedGame(pid).started != started) return;
+    GameWindows seen{pid};
+    EnumWindows(launchedWindow, reinterpret_cast<LPARAM>(&seen));
+    const auto target = seen.dialog ? seen.dialog : seen.game ? seen.game : seen.login;
+    if (!target) return;
+    ShowWindowAsync(target, IsIconic(target) ? SW_RESTORE : SW_SHOW);
+    SetForegroundWindow(target);
+}
+#else
+LaunchedGame launchedGame(unsigned) { return {}; }
+bool endLaunchedGame(unsigned, std::uint64_t) { return false; }
+void showLaunchedGame(unsigned, std::uint64_t) {}
+#endif
 } // namespace gw2

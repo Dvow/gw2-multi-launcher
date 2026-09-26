@@ -2,7 +2,7 @@
 
 Several Guild Wars 2 accounts. One copy of the game.
 
-Launch one account, or all of them. Each account opens in its own window. Closing the launcher leaves the game open.
+Launch one account, or all of them. Each account opens in its own window. Closing the launcher leaves the game open. Opening it again shows each game this launcher started that is still running. Starting the launcher while it is already open brings that window forward.
 
 An account's cross kills its game process immediately, including during startup
 or sign-in. The double cross kills every game launched by this launcher and
@@ -35,6 +35,9 @@ while GW2 is running, close all GW2 windows and launch again.
 
 Enable **Always on top** in Settings to keep the launcher above other windows.
 The setting applies immediately and is remembered between sessions.
+
+The first time the launcher opens, it asks whether to check for updates
+automatically. That check stays off until you choose yes. The choice is remembered.
 
 To load DLLs at startup, use the **DLLs** folder button in Settings or an account's
 editor. DLLs selected in Settings load first, followed by that account's DLLs;

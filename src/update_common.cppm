@@ -85,14 +85,11 @@ void installAppUpdate(const AppUpdate &release, std::stop_token stop) {
 }
 void removeParked(const std::filesystem::path &file) {
     std::error_code error;
-    auto parked = file;
-    parked += ".old";
-    std::filesystem::remove(parked, error);
-    for (int index = 1; index < 20; ++index) {
-        auto extra = file;
-        extra += ".old";
-        extra += std::to_string(index);
-        std::filesystem::remove(extra, error);
+    const auto prefix = file.filename().string() + ".old";
+    for (const auto &entry : std::filesystem::directory_iterator(file.parent_path(), error)) {
+        if (error) return;
+        if (!entry.is_regular_file(error)) continue;
+        if (entry.path().filename().string().starts_with(prefix)) std::filesystem::remove(entry.path(), error);
     }
 }
 void clearParkedFiles() {

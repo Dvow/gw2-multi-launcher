@@ -135,24 +135,69 @@ function CloseHandle(Handle: THandle): Integer;
   external 'CloseHandle@kernel32.dll stdcall';
 function MoveFileEx(ExistingFile, NewFile: String; Flags: Cardinal): Integer;
   external 'MoveFileExW@kernel32.dll stdcall';
+function GetTickCount: Cardinal;
+  external 'GetTickCount@kernel32.dll stdcall';
+
+var
+  ParkedCount: Integer;
+  ParkedFrom: array[0..15] of String;
+  ParkedTo: array[0..15] of String;
+
+procedure UndoParks;
+var
+  Index: Integer;
+begin
+  { A failed rename must restore earlier files. The copy step has not run. }
+  for Index := ParkedCount - 1 downto 0 do
+    MoveFileEx(ParkedTo[Index], ParkedFrom[Index], 0);
+  ParkedCount := 0;
+end;
+
+function BackupName(Path: String): String;
+var
+  Index: Integer;
+  Candidate: String;
+begin
+  Result := '';
+  Candidate := Path + '.old';
+  if not FileExists(Candidate) then
+  begin
+    Result := Candidate;
+    Exit;
+  end;
+  Index := 0;
+  while Index < 1000 do
+  begin
+    Candidate := Path + '.old' + IntToStr(GetTickCount) + IntToStr(Index);
+    if not FileExists(Candidate) then
+    begin
+      Result := Candidate;
+      Exit;
+    end;
+    Index := Index + 1;
+  end;
+end;
 
 procedure ParkInstalledFile(Name: String);
 var
   Path, Backup: String;
-  Index: Integer;
 begin
   Path := ExpandConstant(Name);
   if not FileExists(Path) then Exit;
-  if DeleteFile(Path) then Exit;
-  Index := 0;
-  while Index < 20 do
+  if ParkedCount > 15 then
   begin
-    if Index = 0 then Backup := Path + '.old' else Backup := Path + '.old' + IntToStr(Index);
-    if not FileExists(Backup) then Break;
-    if DeleteFile(Backup) then Break;
-    Index := Index + 1;
+    UndoParks;
+    RaiseException('Could not prepare the update.');
   end;
-  if Index < 20 then MoveFileEx(Path, Backup, 0);
+  Backup := BackupName(Path);
+  if (Backup = '') or (MoveFileEx(Path, Backup, 0) = 0) then
+  begin
+    UndoParks;
+    RaiseException('Could not replace ' + ExtractFileName(Path) + '. Close that game and run the update again.');
+  end;
+  ParkedFrom[ParkedCount] := Path;
+  ParkedTo[ParkedCount] := Backup;
+  ParkedCount := ParkedCount + 1;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -163,6 +208,7 @@ begin
     Exit;
   end;
   if CurStep <> ssInstall then Exit;
+  ParkedCount := 0;
   ParkInstalledFile('{app}\@GW2_PROGRAM_FILE@.exe');
   ParkInstalledFile('{app}\GW2MultiLauncher.exe');
   ParkInstalledFile('{app}\@GW2_PROGRAM_FILE@.Host.exe');

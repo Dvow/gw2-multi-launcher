@@ -2,11 +2,13 @@ module;
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -15,6 +17,7 @@ module;
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -45,6 +48,7 @@ enum class Action {
     closeAll,
     checkUpdate,
     installUpdate,
+    automaticUpdates,
     connect,
     guard,
     verify,
@@ -61,6 +65,7 @@ struct Command {
     Secret password{};
     unsigned pid{};
     Provider provider{};
+    bool enable{};
     Catalog settings{};
 };
 struct SessionView {
@@ -114,6 +119,7 @@ class App {
         std::size_t written{}, received{};
         std::array<unsigned char, 12> record{};
         std::uint64_t deadline{};
+        std::uint64_t started{};
         bool show{}, failed{}, closeSent{};
     };
     std::mutex mutex_;
@@ -235,55 +241,62 @@ class App {
     void start(std::string id, std::stop_token stop) {
         const bool update = id.empty();
         if (active(id)) throw std::runtime_error("This account already has a client.");
-        auto dlls = update ? std::vector<std::string>{} : launchDlls(store_->account(id), store_->catalog());
-        if (!update && appExtension().prepareLaunch) appExtension().prepareLaunch(dlls, stop);
-        Secret epicRequest;
-        if (!update && store_->account(id).provider == Provider::epic)
-            epicRequest = epicCredentials(id, "1", stop);
-        const auto &catalog = store_->catalog();
-        Session session;
-        session.view = {.id = id, .status = update ? "Starting updater…" : "Starting…", .active = true};
-        auto &bytes = session.outgoing.bytes;
-        const auto steam = !update && store_->account(id).provider == Provider::steam;
-        if (steam) {
-            const auto &account = store_->account(id);
-            session.outgoing = steamRequest(catalog, account, openAccount(account, stop), dlls);
-#ifdef _WIN32
-            constexpr auto executable = GW2_PROGRAM_FILE ".exe";
-#else
-            constexpr auto executable = GW2_PROGRAM_FILE;
-#endif
-            session.process = std::make_unique<Process>(
-                std::vector<std::string>{utf8(installed(executable)), "--steam-session"},
-                std::vector<std::pair<std::string, std::string>>{});
-        } else {
-            if (update) {
-                appendNumber(bytes, magic);
-                appendNumber(bytes, 1);
-                wireString(bytes, catalog.gamePath);
-            } else {
-                const auto &account = store_->account(id);
-                gameRequest(bytes, catalog, account, dlls);
-                auto secret =
-                    account.provider == Provider::epic ? std::move(epicRequest) : openAccount(account, stop);
-                if (account.provider == Provider::arenaNet)
-                    session.view.email = fromUtf16(
-                        std::span(secret.bytes).subspan(8, (number(secret.bytes) + 1) * 2));
-                // Reserve before copying the password, so vector growth cannot leave
-                // abandoned plaintext allocations behind.
-                bytes.reserve(bytes.size() + 5 + secret.bytes.size());
-                bytes.push_back(3);
-                if (account.provider != Provider::epic)
-                    appendNumber(bytes, static_cast<std::uint32_t>(secret.bytes.size()));
-                bytes.insert(bytes.end(), secret.bytes.begin(), secret.bytes.end());
-            }
-            cancelled(stop);
-            session.process = gameRunner(catalog, dllDirectories(dlls));
-        }
-        session.deadline = SDL_GetTicks() + 90000;
         std::erase_if(sessions_,
             [&](const Session &existing) { return existing.view.id == id && !existing.view.active; });
-        sessions_.push_back(std::move(session));
+        sessions_.emplace_back();
+        auto &session = sessions_.back();
+        session.view = {.id = id, .status = update ? "Starting updater…" : "Starting…", .active = true};
+        publish();
+        try {
+            auto dlls = update ? std::vector<std::string>{} : launchDlls(store_->account(id), store_->catalog());
+            if (!update && appExtension().prepareLaunch) appExtension().prepareLaunch(dlls, stop);
+            Secret epicRequest;
+            if (!update && store_->account(id).provider == Provider::epic)
+                epicRequest = epicCredentials(id, "1", stop);
+            const auto &catalog = store_->catalog();
+            auto &bytes = session.outgoing.bytes;
+            const auto steam = !update && store_->account(id).provider == Provider::steam;
+            if (steam) {
+                const auto &account = store_->account(id);
+                session.outgoing = steamRequest(catalog, account, openAccount(account, stop), dlls);
+#ifdef _WIN32
+                constexpr auto executable = GW2_PROGRAM_FILE ".exe";
+#else
+                constexpr auto executable = GW2_PROGRAM_FILE;
+#endif
+                session.process = std::make_unique<Process>(
+                    std::vector<std::string>{utf8(installed(executable)), "--steam-session"},
+                    std::vector<std::pair<std::string, std::string>>{});
+            } else {
+                if (update) {
+                    appendNumber(bytes, magic);
+                    appendNumber(bytes, 1);
+                    wireString(bytes, catalog.gamePath);
+                } else {
+                    const auto &account = store_->account(id);
+                    gameRequest(bytes, catalog, account, dlls);
+                    auto secret =
+                        account.provider == Provider::epic ? std::move(epicRequest) : openAccount(account, stop);
+                    if (account.provider == Provider::arenaNet)
+                        session.view.email = fromUtf16(
+                            std::span(secret.bytes).subspan(8, (number(secret.bytes) + 1) * 2));
+                    // Reserve before copying the password, so vector growth cannot leave
+                    // abandoned plaintext allocations behind.
+                    bytes.reserve(bytes.size() + 5 + secret.bytes.size());
+                    bytes.push_back(3);
+                    if (account.provider != Provider::epic)
+                        appendNumber(bytes, static_cast<std::uint32_t>(secret.bytes.size()));
+                    bytes.insert(bytes.end(), secret.bytes.begin(), secret.bytes.end());
+                }
+                cancelled(stop);
+                session.process = gameRunner(catalog, dllDirectories(dlls));
+            }
+            session.deadline = SDL_GetTicks() + 90000;
+        } catch (...) {
+            sessions_.pop_back();
+            publish();
+            throw;
+        }
         publish();
     }
     void prepare(std::stop_token stop);
@@ -460,6 +473,10 @@ class App {
         case Action::installUpdate:
             beginUpdate(command.action == Action::installUpdate, stop);
             break;
+        case Action::automaticUpdates:
+            store_->automaticUpdates(command.enable);
+            if (command.enable) beginUpdate(false, stop);
+            break;
         case Action::show:
             for (auto &session : sessions_)
                 if (session.view.id == command.id && session.view.active && !session.view.closing)
@@ -620,7 +637,11 @@ class App {
             throw std::runtime_error("Unexpected game helper status.");
         if ((state == 12 || state == 13) && detail != 1 && detail != 2 && detail != 4 && detail != 5 && detail != 6)
             throw std::runtime_error("Unknown GW2 verification request. Select Show to check the game.");
-        if (state == 1) session.view.pid = detail;
+        if (state == 1) {
+            session.view.pid = detail;
+            if (!session.view.id.empty()) session.started = launchedGame(detail).started;
+            if (session.started) storeLaunches();
+        }
         const bool closing = session.view.closing;
         if (closing) {
             if (state == 5)
@@ -631,7 +652,10 @@ class App {
             } else
                 return; // Native work interrupted by Kill can report a stale login/load error.
         }
-        if (state == 5 || state == 8) session.view.pid = 0;
+        if (state == 5 || state == 8) {
+            session.view.pid = 0;
+            session.started = 0;
+        }
         session.view.state = session.failed && state != 5 ? 6 : state;
         session.view.verification = state == 12 || state == 13 ? detail : 0;
         if (state == 3 || state == 4 || state == 5 || state == 6) session.view.email.clear();
@@ -666,6 +690,7 @@ class App {
             session.view.active = session.view.canShow = session.view.closing = false;
             session.process.reset();
             session.outgoing.clear();
+            storeLaunches();
         }
     }
     bool readStatus(Session &session) {
@@ -681,7 +706,95 @@ class App {
         }
         return changed;
     }
+    void storeLaunches() {
+#ifdef _WIN32
+        std::string text = "1\n";
+        for (const auto &session : sessions_) {
+            if (session.view.id.empty() || !session.view.active || !session.view.pid || !session.started) continue;
+            text += session.view.id;
+            text += ' ';
+            text += std::to_string(session.view.pid);
+            text += ' ';
+            text += std::to_string(session.started);
+            text += '\n';
+        }
+        try {
+            atomicWrite(dataRoot() / "sessions.txt", text);
+        } catch (const std::exception &) {
+        }
+#endif
+    }
+    void recallLaunches() {
+#ifdef _WIN32
+        std::ifstream input(dataRoot() / "sessions.txt");
+        if (!input) return;
+        std::string version;
+        if (!std::getline(input, version) || version != "1") return;
+        const auto &accounts = store_->catalog().accounts;
+        for (std::string line; std::getline(input, line);) {
+            const auto first = line.find(' ');
+            const auto second = first == std::string::npos ? std::string::npos : line.find(' ', first + 1);
+            if (first == std::string::npos || second == std::string::npos || !first || first > 64) continue;
+            const auto id = line.substr(0, first);
+            const auto pidText = std::string_view(line).substr(first + 1, second - first - 1);
+            auto startedText = std::string_view(line).substr(second + 1);
+            if (!startedText.empty() && startedText.back() == '\r') startedText.remove_suffix(1);
+            unsigned pid{};
+            std::uint64_t started{};
+            const auto pidParsed = std::from_chars(pidText.data(), pidText.data() + pidText.size(), pid);
+            const auto startedParsed =
+                std::from_chars(startedText.data(), startedText.data() + startedText.size(), started);
+            if (pidParsed.ec != std::errc{} || pidParsed.ptr != pidText.data() + pidText.size() ||
+                startedParsed.ec != std::errc{} || startedParsed.ptr != startedText.data() + startedText.size() ||
+                !pid || !started)
+                continue;
+            if (std::ranges::find(accounts, id, &Account::id) == accounts.end()) continue;
+            const auto live = launchedGame(pid);
+            if (live.reachable && live.started != started) continue;
+            if (std::ranges::any_of(sessions_, [&](const Session &session) {
+                    return session.view.id == id || session.view.pid == pid;
+                }))
+                continue;
+            Session session;
+            session.view = {.id = id, .status = "Running", .state = 4, .pid = pid, .active = true, .canShow = true};
+            session.started = started;
+            sessions_.push_back(std::move(session));
+        }
+        storeLaunches();
+#endif
+    }
+    bool watchLaunch(Session &session) {
+        const auto live = launchedGame(session.view.pid);
+        if (!live.reachable) return false;
+        if (live.started != session.started) {
+            session.view.pid = 0;
+            session.started = 0;
+            session.view.state = 5;
+            session.view.status = "Client exited";
+            session.view.active = session.view.canShow = session.view.closing = false;
+            session.view.email.clear();
+            storeLaunches();
+            return true;
+        }
+        if (session.view.closing && !session.closeSent) {
+            if (endLaunchedGame(session.view.pid, session.started)) {
+                session.closeSent = true;
+                return true;
+            }
+            session.view.closing = false;
+            session.closeSent = false;
+            session.view.state = 6;
+            session.view.status = failure(1008);
+            state_.error = {session.view.status};
+            return true;
+        }
+        if (!session.show) return false;
+        showLaunchedGame(session.view.pid, session.started);
+        session.show = false;
+        return true;
+    }
     bool poll(Session &session, std::stop_token stop) {
+        if (!session.process) return watchLaunch(session);
         bool changed{};
         try {
             // Observe an already-exited client before writing another control byte.
@@ -734,9 +847,11 @@ class App {
             session.failed = true;
             session.view.active = session.view.canShow = session.view.closing = false;
             session.view.pid = 0;
+            session.started = 0;
             session.view.email.clear();
             session.process.reset();
             session.outgoing.clear();
+            storeLaunches();
             launches_.clear();
             changed = true;
         }
@@ -758,8 +873,10 @@ class App {
     }
     void beginUpdate(bool install, std::stop_token stop) {
         if (!appUpdatesEnabled() || updateTask_.valid()) return;
-        if (install && (running() || state_.auth.busy || !launches_.empty()))
-            throw std::runtime_error("Close your games and finish signing in before updating the launcher.");
+        if (install && (state_.auth.busy || !launches_.empty()))
+            throw std::runtime_error(state_.auth.busy
+                    ? "Finish signing in before updating the launcher."
+                    : "Wait for the current launch to finish before updating the launcher.");
         if (install && state_.update.stage != UpdateStage::available)
             throw std::runtime_error("Check for updates before installing.");
         if (!install) state_.update = {};
@@ -794,6 +911,7 @@ class App {
     void run(std::stop_token stop) {
         try {
             store_ = std::make_unique<Store>();
+            recallLaunches();
             if (appExtension().start) appExtension().start(stop);
             state_.ready = true;
             if (store_->catalog().autoUpdate) beginUpdate(false, stop);

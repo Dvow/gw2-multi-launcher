@@ -3,6 +3,8 @@ name: Build and release
 on:
   push:
     branches: [main]
+    paths:
+      - CMakeLists.txt
   pull_request:
   workflow_dispatch:
 
@@ -14,8 +16,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  windows:
+  changes:
     if: github.event.repository.fork == false
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -eu
+          version=$(sed -nE 's/^project\(GW2MultiLauncher VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          if [ "$GITHUB_EVENT_NAME" != "push" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          previous=$(git show "$BEFORE:CMakeLists.txt" | sed -nE 's/^project\(GW2MultiLauncher VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p')
+          if [ "$version" = "$previous" ]; then
+            echo "Project version is still $version. Skipping the build."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Project version changed from ${previous:-none} to $version."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+  windows:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

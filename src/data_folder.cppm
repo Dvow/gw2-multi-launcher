@@ -10,6 +10,11 @@ export const char *&gw2ProductName() {
     return name;
 }
 
+export bool &gw2CatalogUsesDocuments() {
+    static bool value = false;
+    return value;
+}
+
 #ifndef GW2_HAS_UI_EXT
 extern "C" void gw2ApplyNames() {}
 #else
