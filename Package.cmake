@@ -31,9 +31,12 @@ function(gw2_fetch_innosetup destination)
 endfunction()
 
 set(setup_dependencies gw2-multi-launcher ${native_targets} ${steam_setup_depends}
-  src/icons/gw2-multi-launcher.png)
+  src/icons/gw2-multi-launcher.png ${GW2_SETUP_DEPENDS})
 
 if(WIN32)
+  if(NOT GW2_SETUP_VERSION_DESCRIPTION)
+    set(GW2_SETUP_VERSION_DESCRIPTION "${GW2_PRODUCT_NAME}")
+  endif()
   file(REMOVE "${CMAKE_BINARY_DIR}/ThirdPartyNotices.txt")
   install(TARGETS gw2-multi-launcher ${native_targets} RUNTIME DESTINATION . LIBRARY DESTINATION .)
   install(PROGRAMS "${GW2_STEAM_EXECUTABLE}" DESTINATION .)
@@ -58,10 +61,12 @@ if(WIN32)
 AppId=@GW2_APP_ID@
 AppName=@GW2_PRODUCT_NAME@
 AppVersion=@PROJECT_VERSION@
+VersionInfoDescription=@GW2_SETUP_VERSION_DESCRIPTION@
 AppPublisher=GW2 Multi Launcher contributors
 DefaultDirName={localappdata}\Programs\@GW2_PRODUCT_NAME@
 DisableDirPage=yes
 DisableProgramGroupPage=yes
+UsePreviousTasks=no
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
@@ -77,23 +82,29 @@ OutputBaseFilename=gw2-multi-launcher_@PROJECT_VERSION@_win-x64_setup
 Compression=lzma2/max
 SolidCompression=yes
 
+[Tasks]
+Name: desktopicon; Description: "Create a &desktop shortcut"; Check: not IsLauncherUpdate
+
 [Files]
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.Host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.Native.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@GW2_STEAM_EXECUTABLE@"; DestDir: "{app}"; Flags: ignoreversion
-Source: "@CMAKE_BINARY_DIR@/uninstall-stub.exe"; Flags: dontcopy
+@GW2_SETUP_FILES@
 
 [InstallDelete]
 Type: files; Name: "{app}\gw2-multi-launcher.bmp"
 Type: files; Name: "{app}\gw2-multi-launcher.png"
 Type: files; Name: "{app}\GW2MultiLauncher.Host.exe"
 Type: files; Name: "{app}\GW2MultiLauncher.Native.dll"
-Type: filesandordirs; Name: "{app}\steam"
-Type: files; Name: "{app}\README.md"
-Type: files; Name: "{app}\LICENSE"
-Type: files; Name: "{app}\ThirdPartyNotices.txt"
+Type: files; Name: "{app}\steam\@GW2_PROGRAM_FILE@.Steam.exe"
+Type: files; Name: "{app}\steam\GW2MultiLauncher.Steam.exe"
+Type: files; Name: "{app}\steam\GW2MultiLauncher.Steam.dll"
+Type: dirifempty; Name: "{app}\steam"
+Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.exe"
+Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.dat"
+Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.exe.removing"
 
 [UninstallDelete]
 Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.exe"
@@ -101,13 +112,15 @@ Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.dat"
 Type: files; Name: "{app}\Uninstall @GW2_PRODUCT_NAME@.exe.removing"
 
 [Icons]
-Name: "{userprograms}\@GW2_PRODUCT_NAME@"; Filename: "{app}\@GW2_PROGRAM_FILE@.exe"; WorkingDir: "{app}"
+Name: "{userprograms}\@GW2_PRODUCT_NAME@"; Filename: "{app}\@GW2_PROGRAM_FILE@.exe"; WorkingDir: "{app}"; AppUserModelID: "@GW2_APP_ID@"
+Name: "{userdesktop}\@GW2_PRODUCT_NAME@"; Filename: "{app}\@GW2_PROGRAM_FILE@.exe"; WorkingDir: "{app}"; AppUserModelID: "@GW2_APP_ID@"; Tasks: desktopicon; Check: not IsLauncherUpdate
 
 [Run]
 Filename: "{app}\@GW2_PROGRAM_FILE@.exe"; Description: "Open @GW2_PRODUCT_NAME@"; Flags: nowait postinstall skipifsilent; Check: not IsLauncherUpdate
 Filename: "{app}\@GW2_PROGRAM_FILE@.exe"; Flags: nowait; Check: IsLauncherUpdate
 
 [Code]
+@GW2_SETUP_CODE@
 function OpenProcess(Access: LongWord; Inherit: Integer; ProcessId: LongWord): THandle;
   external 'OpenProcess@kernel32.dll stdcall';
 function WaitForSingleObject(Handle: THandle; Milliseconds: LongWord): LongWord;
@@ -136,113 +149,11 @@ begin
   if Index < 20 then MoveFileEx(Path, Backup, 0);
 end;
 
-procedure AppendUninstall(Dest: TFileStream; Path: String; var Size: Int64);
-var
-  Source: TFileStream;
-begin
-  Source := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
-  try
-    Size := Source.Size;
-    if Size > 0 then Dest.CopyFrom(Source, Size, 65536);
-  finally
-    Source.Free;
-  end;
-end;
-
-procedure WriteInt64(Dest: TFileStream; Value: Int64);
-var
-  Packed: AnsiString;
-  Index: Integer;
-  Piece: Integer;
-  Rest: Int64;
-begin
-  SetLength(Packed, 8);
-  Rest := Value;
-  for Index := 1 to 8 do
-  begin
-    Piece := Integer(Rest) and 255;
-    Packed[Index] := Chr(Piece);
-    Rest := Rest div 256;
-  end;
-  Dest.WriteBuffer(Packed, 8);
-end;
-
-procedure WriteUninstallFooter(Dest: TFileStream; ExeSize, DatSize: Int64);
-var
-  Magic: AnsiString;
-begin
-  SetLength(Magic, 8);
-  Magic[1] := 'K';
-  Magic[2] := 'X';
-  Magic[3] := 'U';
-  Magic[4] := 'N';
-  Magic[5] := 'I';
-  Magic[6] := 'N';
-  Magic[7] := 'S';
-  Magic[8] := 'T';
-  Dest.WriteBuffer(Magic, 8);
-  WriteInt64(Dest, ExeSize);
-  WriteInt64(Dest, DatSize);
-end;
-
-function WritePackedUninstaller(StubPath, ExePath, DatPath, TargetPath: String): Boolean;
-var
-  Dest: TFileStream;
-  ExeSize, DatSize: Int64;
-begin
-  Result := False;
-  Dest := TFileStream.Create(TargetPath, fmCreate);
-  try
-    AppendUninstall(Dest, StubPath, ExeSize);
-    if ExeSize <= 0 then Exit;
-    AppendUninstall(Dest, ExePath, ExeSize);
-    if ExeSize <= 0 then Exit;
-    AppendUninstall(Dest, DatPath, DatSize);
-    if DatSize <= 0 then Exit;
-    WriteUninstallFooter(Dest, ExeSize, DatSize);
-    Result := True;
-  finally
-    Dest.Free;
-  end;
-end;
-
-procedure PackUninstaller;
-var
-  StubPath, ExePath, DatPath, TargetPath, OldDat: String;
-begin
-  StubPath := ExpandConstant('{tmp}\uninstall-stub.exe');
-  ExePath := ExpandConstant('{app}\unins000.exe');
-  DatPath := ExpandConstant('{app}\unins000.dat');
-  TargetPath := ExpandConstant('{app}\Uninstall @GW2_PRODUCT_NAME@.exe');
-  OldDat := ExpandConstant('{app}\Uninstall @GW2_PRODUCT_NAME@.dat');
-  if not FileExists(ExePath) then Exit;
-  if not FileExists(DatPath) then Exit;
-  try
-    ExtractTemporaryFile('uninstall-stub.exe');
-  except
-    Exit;
-  end;
-  if not FileExists(StubPath) then Exit;
-  DeleteFile(TargetPath);
-  if not WritePackedUninstaller(StubPath, ExePath, DatPath, TargetPath) then
-  begin
-    DeleteFile(TargetPath);
-    Exit;
-  end;
-  if not DeleteFile(ExePath) then Exit;
-  if not DeleteFile(DatPath) then Exit;
-  DeleteFile(OldDat);
-  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\@GW2_APP_ID@_is1',
-    'UninstallString', '"' + TargetPath + '"');
-  RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\@GW2_APP_ID@_is1',
-    'QuietUninstallString', '"' + TargetPath + '" /SILENT');
-end;
-
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    PackUninstaller;
+    @GW2_SETUP_POSTINSTALL@
     Exit;
   end;
   if CurStep <> ssInstall then Exit;
@@ -285,7 +196,7 @@ end;
   set(setup_file "${CMAKE_BINARY_DIR}/gw2-multi-launcher_${PROJECT_VERSION}_win-x64_setup.exe")
   add_custom_command(OUTPUT "${setup_file}"
     COMMAND "${GW2_ISCC}" /Qp "${CMAKE_BINARY_DIR}/setup.iss"
-    DEPENDS ${setup_dependencies} uninstall-stub "${CMAKE_BINARY_DIR}/setup.iss" "${CMAKE_BINARY_DIR}/icon.ico"
+    DEPENDS ${setup_dependencies} "${CMAKE_BINARY_DIR}/setup.iss" "${CMAKE_BINARY_DIR}/icon.ico"
     COMMENT "Building Windows installer" VERBATIM)
 else()
   set(notices "${CMAKE_BINARY_DIR}/ThirdPartyNotices.txt")

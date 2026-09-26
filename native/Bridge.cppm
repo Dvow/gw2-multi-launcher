@@ -9,6 +9,19 @@ module;
 #include <initializer_list>
 #include <MinHook.h>
 
+#ifndef GW2_PACKET_MAGIC
+#define GW2_PACKET_MAGIC 0x4E4C4D47
+#endif
+#ifndef GW2_NATIVE_CHANNEL_W
+#define GW2_NATIVE_CHANNEL_W L"GW2MultiLauncher"
+#endif
+#ifndef GW2_NATIVE_EXECUTE
+#define GW2_NATIVE_EXECUTE Gw2MultiLauncherExecute
+#endif
+#ifndef GW2_NATIVE_HOOK
+#define GW2_NATIVE_HOOK Gw2MultiLauncherHook
+#endif
+
 export module native_bridge;
 import game;
 
@@ -103,8 +116,8 @@ DWORD ReleaseInstanceMutex() {
 }
 
 namespace {
-constexpr wchar_t MessageName[] = L"GW2MultiLauncher.Native.13";
-constexpr DWORD Magic = 0x4E4C4D47; // GMLN: GW2 Multi Launcher native packet.
+constexpr wchar_t MessageName[] = GW2_NATIVE_CHANNEL_W L".Native.13";
+constexpr DWORD Magic = GW2_PACKET_MAGIC;
 
 enum Operation : DWORD {
     Probe = 0,
@@ -181,7 +194,7 @@ struct LocalBuffer {
 };
 
 void MappingName(wchar_t (&name)[96], DWORD caller, std::uint64_t nonce) {
-    swprintf_s(name, L"Local\\GW2MultiLauncher.%lu.%016llX", caller, nonce);
+    swprintf_s(name, L"Local\\" GW2_NATIVE_CHANNEL_W L".%lu.%016llX", caller, nonce);
 }
 
 bool IsReadable(const void *address, SIZE_T size) {
@@ -615,13 +628,13 @@ void ReceiveRequest(const CWPSTRUCT &message) {
     SecureZeroMemory(p->password, sizeof(p->password));
     InterlockedExchange(reinterpret_cast<volatile LONG *>(&p->result), result);
 }
-extern "C" __declspec(dllexport) LRESULT CALLBACK Gw2MultiLauncherHook(
+extern "C" __declspec(dllexport) LRESULT CALLBACK GW2_NATIVE_HOOK(
     int code, WPARAM wParam, LPARAM lParam) {
     if (code >= 0 && lParam) ReceiveRequest(*reinterpret_cast<const CWPSTRUCT *>(lParam));
     return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
-extern "C" __declspec(dllexport) DWORD __cdecl Gw2MultiLauncherExecute(
+extern "C" __declspec(dllexport) DWORD __cdecl GW2_NATIVE_EXECUTE(
     HWND window, DWORD targetPid, DWORD operation, const wchar_t *email, const wchar_t *password,
     DWORD *result, DWORD *flags, DWORD *exceptionCode, const gw2::Layout *layout) {
     if (!result || !flags || !exceptionCode || !layout) return ERROR_INVALID_PARAMETER;
@@ -677,7 +690,7 @@ extern "C" __declspec(dllexport) DWORD __cdecl Gw2MultiLauncherExecute(
         wcscpy_s(p->email, email);
         wcscpy_s(p->password, password);
     }
-    Hook hook{SetWindowsHookExW(WH_CALLWNDPROC, Gw2MultiLauncherHook, moduleHandle, thread)};
+    Hook hook{SetWindowsHookExW(WH_CALLWNDPROC, GW2_NATIVE_HOOK, moduleHandle, thread)};
     DWORD error{};
     if (!hook.value)
         error = GetLastError();

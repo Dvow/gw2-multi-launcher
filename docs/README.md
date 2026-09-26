@@ -61,12 +61,16 @@ Accounts and settings are stored in `%APPDATA%\GW2 Multi Launcher` on Windows
 settings, the launcher starts fresh; older locations and settings formats are
 not imported.
 
+Windows Setup selects **Create a desktop shortcut** by default. Silent launcher
+updates do not create desktop shortcuts. Shortcuts use the installer's current
+product name and ID.
+
 Not an official ArenaNet app. Two-factor still works like a normal login.
 
 <details>
 <summary>Build</summary>
 
-CMake 3.30+ and Ninja. Windows also needs MSVC x64 and the Windows SDK.
+CMake 3.30+ and Ninja. Windows also needs MSVC x64 and Windows SDK 10.0.26100 or newer.
 
 ```sh
 cmake --preset release

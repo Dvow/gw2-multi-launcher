@@ -7,3 +7,4 @@ CMakeUserPresets.json
 **/obj/
 **/bin/
 /private/
+/.github/workflows/kx-publish.yml

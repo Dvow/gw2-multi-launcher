@@ -910,44 +910,50 @@ struct HttpReply {
 
 #ifdef _WIN32
 HttpReply https(std::wstring path, std::string_view body, bool post) {
+    struct Internet {
+        HINTERNET value;
+        ~Internet() { if (value) WinHttpCloseHandle(value); }
+    };
     std::wstring agent;
     for (const auto c : std::string_view(GW2_PRODUCT_NAME)) agent.push_back(static_cast<unsigned char>(c));
-    HINTERNET session = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0);
-    if (!session) throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
-    WinHttpSetTimeouts(session, 5000, 5000, 15000, 30000);
-    HINTERNET connection = WinHttpConnect(session, L"api.steampowered.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
-    HINTERNET request = connection ? WinHttpOpenRequest(connection, post ? L"POST" : L"GET", path.c_str(), nullptr,
+    Internet session{WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
+    if (!session.value || !WinHttpSetTimeouts(session.value, 5000, 5000, 15000, 30000))
+        throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
+    Internet connection{WinHttpConnect(session.value, L"api.steampowered.com", INTERNET_DEFAULT_HTTPS_PORT, 0)};
+    Internet request{connection.value ? WinHttpOpenRequest(connection.value, post ? L"POST" : L"GET", path.c_str(), nullptr,
                                             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
-                                  : nullptr;
-    const auto sent = request &&
-        WinHttpSendRequest(request, post ? L"Content-Type: application/x-www-form-urlencoded\r\n" : WINHTTP_NO_ADDITIONAL_HEADERS,
+                                  : nullptr};
+    DWORD disabled = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION | WINHTTP_DISABLE_COOKIES;
+    const auto sent = request.value &&
+        WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled)) &&
+        WinHttpSendRequest(request.value, post ? L"Content-Type: application/x-www-form-urlencoded\r\n" : WINHTTP_NO_ADDITIONAL_HEADERS,
             post ? (DWORD)-1 : 0, post ? const_cast<char *>(body.data()) : nullptr,
             post ? static_cast<DWORD>(body.size()) : 0, post ? static_cast<DWORD>(body.size()) : 0, 0) &&
-        WinHttpReceiveResponse(request, nullptr);
+        WinHttpReceiveResponse(request.value, nullptr);
     HttpReply reply;
     if (sent) {
         DWORD status{}, size = sizeof(status);
-        WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
-            &status, &size, WINHTTP_NO_HEADER_INDEX);
+        if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                &status, &size, WINHTTP_NO_HEADER_INDEX))
+            throw Failure("Steam returned an invalid response.", 1010);
         reply.status = static_cast<int>(status);
         wchar_t eresult[16]{};
         size = sizeof(eresult);
-        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, L"x-eresult", eresult, &size, WINHTTP_NO_HEADER_INDEX))
+        if (WinHttpQueryHeaders(request.value, WINHTTP_QUERY_CUSTOM, L"x-eresult", eresult, &size, WINHTTP_NO_HEADER_INDEX))
             reply.result = _wtoi(eresult);
         Secret buffer(8192);
+        const auto deadline = GetTickCount64() + 30000;
         for (;;) {
             DWORD count{};
-            if (!WinHttpReadData(request, buffer.bytes.data(), static_cast<DWORD>(buffer.bytes.size()), &count))
-                break;
+            if (GetTickCount64() >= deadline ||
+                !WinHttpReadData(request.value, buffer.bytes.data(), static_cast<DWORD>(buffer.bytes.size()), &count))
+                throw Failure("The Steam response was interrupted or timed out.", 1010);
             if (!count) break;
             if (reply.body.size() + count > 1024 * 1024)
                 throw Failure("Steam sent a message that is too large.", 1010);
             reply.body.insert(reply.body.end(), buffer.bytes.begin(), buffer.bytes.begin() + count);
         }
     }
-    if (request) WinHttpCloseHandle(request);
-    if (connection) WinHttpCloseHandle(connection);
-    WinHttpCloseHandle(session);
     if (!sent) throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
     return reply;
 }

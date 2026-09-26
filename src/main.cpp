@@ -2,6 +2,10 @@
 #include <SDL3/SDL_main.h>
 #include <exception>
 #include <string_view>
+#ifdef _WIN32
+#include <windows.h>
+#include <shobjidl_core.h>
+#endif
 
 import ui;
 import session;
@@ -15,6 +19,9 @@ int main(int argc, char **argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--steam-session") return gw2::steamSession();
         if (argc != 1) return 2;
+#ifdef _WIN32
+        SetCurrentProcessExplicitAppUserModelID(L"" GW2_APP_ID);
+#endif
         gw2::clearParkedFiles();
         if (gw2::run() == 3) gw2::relaunchUpdatedApp();
         return 0;

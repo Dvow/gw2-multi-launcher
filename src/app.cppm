@@ -19,10 +19,15 @@ module;
 #include <utility>
 #include <vector>
 
+#ifndef GW2_HELPER_MAGIC
+#define GW2_HELPER_MAGIC 0x374C4D47
+#endif
+
 export module app;
 import game;
 import platform;
 import accounts;
+import app_extension;
 import session;
 import epic;
 import update;
@@ -101,7 +106,7 @@ struct Snapshot {
 };
 
 class App {
-    static constexpr std::uint32_t magic = 0x374C4D47;
+    static constexpr std::uint32_t magic = GW2_HELPER_MAGIC;
     struct Session {
         SessionView view;
         std::unique_ptr<Process> process;
@@ -229,11 +234,12 @@ class App {
     void start(std::string id, std::stop_token stop) {
         const bool update = id.empty();
         if (active(id)) throw std::runtime_error("This account already has a client.");
+        auto dlls = update ? std::vector<std::string>{} : launchDlls(store_->account(id), store_->catalog());
+        if (!update && appExtension().prepareLaunch) appExtension().prepareLaunch(dlls, stop);
         Secret epicRequest;
         if (!update && store_->account(id).provider == Provider::epic)
             epicRequest = epicCredentials(id, "1", stop);
         const auto &catalog = store_->catalog();
-        const auto dlls = update ? std::vector<std::string>{} : launchDlls(store_->account(id), catalog);
         Session session;
         session.view = {.id = id, .status = update ? "Starting updater…" : "Starting…", .active = true};
         auto &bytes = session.outgoing.bytes;
@@ -750,7 +756,7 @@ class App {
         return true;
     }
     void beginUpdate(bool install, std::stop_token stop) {
-        if (updateTask_.valid()) return;
+        if (!appUpdatesEnabled() || updateTask_.valid()) return;
         if (install && (running() || state_.auth.busy || !launches_.empty()))
             throw std::runtime_error("Close your games and finish signing in before updating the launcher.");
         if (install && state_.update.stage != UpdateStage::available)
@@ -782,6 +788,7 @@ class App {
     void run(std::stop_token stop) {
         try {
             store_ = std::make_unique<Store>();
+            if (appExtension().start) appExtension().start(stop);
             state_.ready = true;
             if (store_->catalog().autoUpdate) beginUpdate(false, stop);
             publish();
@@ -789,6 +796,7 @@ class App {
             reportError(e);
             state_.fatal = true;
             publish();
+            if (appExtension().stop) appExtension().stop();
             return;
         }
         while (!stop.stop_requested()) {
@@ -829,6 +837,7 @@ class App {
         if (updateTask_.valid()) updateTask_.wait();
         clearAuthentication();
         sessions_.clear();
+        if (appExtension().stop) appExtension().stop();
         store_.reset();
     }
 

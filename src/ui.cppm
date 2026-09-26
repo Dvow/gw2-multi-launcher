@@ -1372,6 +1372,9 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     ImGui::Spacing();
     ImGui::SeparatorText("Launcher updates");
     ImGui::TextDisabled("Version %s", appVersion.data());
+    const auto updateNotice = appUpdateNotice();
+    if (!updateNotice.empty()) ImGui::TextWrapped("%.*s", static_cast<int>(updateNotice.size()), updateNotice.data());
+    ImGui::BeginDisabled(!appUpdatesEnabled());
     form.edited |= ImGui::Checkbox("Check automatically", &form.autoUpdate);
     help("Check for launcher updates each time you open the app.");
     const auto &update = state.update;
@@ -1383,10 +1386,15 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
                                                              : "Check for updates";
     if (button(label, 0, available ? ink().primary : ImVec4{}))
         form.request({.action = available ? Action::installUpdate : Action::checkUpdate});
+    if (available) {
+        ImGui::SameLine();
+        if (button("Check again")) form.request({.action = Action::checkUpdate});
+    }
     ImGui::EndDisabled();
     if (available) ImGui::TextDisabled("Version %s available", update.version.c_str());
     if (update.stage == UpdateStage::current) mutedText("Up to date");
     if (!update.error.empty()) ImGui::TextWrapped("%s", update.error.c_str());
+    ImGui::EndDisabled();
 }
 
 void updatePrompt(Form &form, const Snapshot &state, bool busy) {

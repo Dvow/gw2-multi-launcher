@@ -29,7 +29,6 @@ module;
 #include <unistd.h>
 #include <libsecret/secret.h>
 #include <openssl/evp.h>
-#include <openssl/params.h>
 #include <openssl/rand.h>
 #include <curl/curl.h>
 #endif
@@ -561,6 +560,9 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
         return !name.empty() && name.size() <= 128 &&
             name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-") == name.npos;
     };
+    if (authorization.size() > 16384 ||
+        std::ranges::any_of(authorization, [](unsigned char c) { return c < 32 || c >= 127; }))
+        throw std::runtime_error("Invalid authorization header.");
     for (const auto &header : options.headers)
         if (!headerName(header.name) || header.value.size() > 4096 ||
             std::ranges::any_of(header.value, [](unsigned char c) { return c < 32 || c == 127; }))
@@ -582,7 +584,8 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
     Internet session{WinHttpOpen(L"GW2MultiLauncher/" GW2_APP_VERSION,
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
     if (!session.value) throw std::runtime_error("Could not open a secure connection.");
-    WinHttpSetTimeouts(session.value, 3000, 3000, 3000, 5000);
+    if (!WinHttpSetTimeouts(session.value, 3000, 3000, 3000, 5000))
+        throw std::runtime_error("Could not set the secure connection timeouts.");
     auto server = utf16(host), route = utf16(resource);
     std::string headerText;
     headerText.reserve(authorization.size() + 80);
@@ -604,9 +607,11 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
                                       : nullptr};
     DWORD policy = download ? WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP
                             : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    DWORD disabled = WINHTTP_DISABLE_AUTHENTICATION | WINHTTP_DISABLE_COOKIES;
     if (request.value &&
-        !WinHttpSetOption(request.value, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy)))
-        throw std::runtime_error("Could not set the secure redirect policy.");
+        (!WinHttpSetOption(request.value, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy)) ||
+         !WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled))))
+        throw std::runtime_error("Could not set the secure request policy.");
     if (!request.value ||
         !WinHttpSendRequest(request.value, reinterpret_cast<const wchar_t *>(headers.bytes.data()),
             static_cast<DWORD>(headers.bytes.size() / 2 - 1), const_cast<char *>(body.data()),
@@ -752,27 +757,6 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
 #endif
     cancelled(stop);
     return reply;
-}
-std::array<unsigned char, 32> hmacSha256(
-    std::span<const unsigned char> key, std::span<const unsigned char> bytes) {
-    std::array<unsigned char, 32> digest{};
-#ifdef _WIN32
-    const bool ok = BCryptHash(BCRYPT_HMAC_SHA256_ALG_HANDLE,
-        const_cast<unsigned char *>(key.data()), static_cast<ULONG>(key.size()),
-        const_cast<unsigned char *>(bytes.data()), static_cast<ULONG>(bytes.size()),
-        digest.data(), static_cast<ULONG>(digest.size())) == 0;
-#else
-    auto mac = std::unique_ptr<EVP_MAC, decltype(&EVP_MAC_free)>(EVP_MAC_fetch(nullptr, "HMAC", nullptr), EVP_MAC_free);
-    auto context = std::unique_ptr<EVP_MAC_CTX, decltype(&EVP_MAC_CTX_free)>(
-        mac ? EVP_MAC_CTX_new(mac.get()) : nullptr, EVP_MAC_CTX_free);
-    OSSL_PARAM params[]{OSSL_PARAM_construct_utf8_string("digest", const_cast<char *>("SHA256"), 0),
-        OSSL_PARAM_construct_end()};
-    const bool ok = context && EVP_MAC_init(context.get(), key.data(), key.size(), params) == 1 &&
-        EVP_MAC_update(context.get(), bytes.data(), bytes.size()) == 1 &&
-        EVP_MAC_final(context.get(), digest.data(), nullptr, digest.size()) == 1;
-#endif
-    if (!ok) throw std::runtime_error("Could not verify the service response.");
-    return digest;
 }
 std::string sha256(std::span<const unsigned char> bytes) {
     std::array<unsigned char, 32> digest{};

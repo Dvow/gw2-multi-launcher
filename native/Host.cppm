@@ -13,14 +13,24 @@ module;
 #include <cstring>
 #include <utility>
 
+#ifndef GW2_HELPER_MAGIC
+#define GW2_HELPER_MAGIC 0x374C4D47
+#endif
+#ifndef GW2_NATIVE_CHANNEL_W
+#define GW2_NATIVE_CHANNEL_W L"GW2MultiLauncher"
+#endif
+#ifndef GW2_NATIVE_EXECUTE
+#define GW2_NATIVE_EXECUTE Gw2MultiLauncherExecute
+#endif
+
 export module native_host;
 import game;
 
-extern "C" __declspec(dllimport) DWORD __cdecl Gw2MultiLauncherExecute(
+extern "C" __declspec(dllimport) DWORD __cdecl GW2_NATIVE_EXECUTE(
     HWND, DWORD, DWORD, const wchar_t *, const wchar_t *, DWORD *, DWORD *, DWORD *, const gw2::Layout *);
 
 namespace {
-constexpr DWORD Magic = 0x374C4D47; // GML7: Close terminates the owned game process.
+constexpr DWORD Magic = GW2_HELPER_MAGIC; // Close terminates the owned game process.
 // Bits: 1 connected, 2 Show, 4 invalid input, 8 Kill, 16 kill failed, 32 stop reader.
 std::atomic<unsigned> control{1};
 // Borrowed from main: publish before Starting, join the reader before closing
@@ -93,7 +103,7 @@ class DllCopies {
                     BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
                 throw Failure{ERROR_GEN_FAILURE};
             wchar_t name[64]{};
-            swprintf_s(name, L"GW2MultiLauncher-%lu-%016llx", GetCurrentProcessId(), nonce);
+            swprintf_s(name, GW2_NATIVE_CHANNEL_W L"-%lu-%016llx", GetCurrentProcessId(), nonce);
             const auto folder = std::filesystem::path(temp) / name;
             pending.paths.folder = folder.native();
             pending.paths.file = (folder / filename).native();
@@ -390,7 +400,7 @@ bool Control(Client &client) {
 DWORD Native(Client &client, DWORD operation, DWORD &flags, const wchar_t *email = nullptr,
     const wchar_t *password = nullptr) {
     DWORD result{}, error{};
-    const auto transport = Gw2MultiLauncherExecute(
+    const auto transport = GW2_NATIVE_EXECUTE(
         client.login, client.pid, operation, email, password, &result, &flags, &error, &client.layout);
     if (transport) throw Failure{transport};
     if (result == 6) throw Failure{error};

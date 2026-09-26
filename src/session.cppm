@@ -22,6 +22,10 @@ module;
 #include <csignal>
 #endif
 
+#ifndef GW2_HELPER_MAGIC
+#define GW2_HELPER_MAGIC 0x374C4D47
+#endif
+
 export module session;
 import game;
 import platform;
@@ -134,7 +138,7 @@ class SteamConnection {
 
 inline void gameRequest(Bytes &out, const Catalog &catalog, const Account &account,
     const std::vector<std::string> &dlls) {
-    appendNumber(out, 0x374C4D47);
+    appendNumber(out, GW2_HELPER_MAGIC);
     appendNumber(out,
         account.provider == Provider::epic        ? 3u
             : account.provider == Provider::steam ? 2u
@@ -208,7 +212,7 @@ inline void report(std::span<const unsigned char> bytes) {
         connected = false;
 }
 inline void report(unsigned state, unsigned detail = 0) {
-    const std::array<unsigned, 3> record{0x374C4D47, state, detail};
+    const std::array<unsigned, 3> record{GW2_HELPER_MAGIC, state, detail};
     report({reinterpret_cast<const unsigned char *>(record.data()), sizeof(record)});
 }
 inline void readControl() {
@@ -287,7 +291,7 @@ class SteamSession {
         (void)identityFields.next();
         identityFields.end();
         offset += secretSize;
-        if (size - offset < 20 || number(request.bytes, offset) != 0x374C4D47 ||
+        if (size - offset < 20 || number(request.bytes, offset) != GW2_HELPER_MAGIC ||
             number(request.bytes, offset + 4) != 2)
             throw std::runtime_error("Invalid session request.");
         steam = std::make_unique<SteamConnection>();
@@ -392,7 +396,7 @@ class SteamSession {
             received += count;
             if (received != record.size()) continue;
             received = 0;
-            if (number(record) != 0x374C4D47) throw std::runtime_error("Invalid game helper status.");
+            if (number(record) != GW2_HELPER_MAGIC) throw std::runtime_error("Invalid game helper status.");
             if (number(record, 4) == 6 && number(record, 8) == 1008) closing = closeSent = false;
             broker::report(record);
             if (number(record, 4) == 5) return false;
