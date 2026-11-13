@@ -1,0 +1,942 @@
+# The launcher's text in Chinese: english<TAB>chinese, \t \n \\ escaped; an empty Chinese keeps the
+# English. scripts/generate_ui_text.py turns this into src/text/zh_cn.hpp; --missing lists new strings.
+# src/ui.cppm
+\#version 130	
+%s  (Chinese client)	%s  （国服客户端）
+%s %s is available.	%s %s 已推出。
+.png	
+3–27 letters and spaces	3–27 个字母和空格
+Account	账号
+Account name	账号名称
+Add DLLs…	添加 DLL…
+Add account	添加账号
+Add programs…	添加程序…
+Always on top	窗口置顶
+An account in this launch was removed, so nothing was launched.	本次启动中的一个账号已被移除，因此没有启动任何内容。
+Anet	Anet
+Anet email	ArenaNet 邮箱
+Approve this login in your authenticator app.	请在你的身份验证器应用中批准此次登录。
+Approve this login using the link in your email.	请通过邮件中的链接批准此次登录。
+Back to accounts	返回账号列表
+Browse	浏览
+Browse for Gw2-64.exe	浏览选择 Gw2-64.exe
+Cancel	取消
+Cancel account setup	取消账号设置
+Cancel new account	取消新账号
+Cancel removal	取消移除
+Cancel sign-in	取消登录
+Change	更改
+Change game location	更改游戏位置
+Changes were not saved. %s	更改未保存。%s
+Check again	重新检查
+Check automatically	自动检查
+Check for launcher updates automatically?	要自动检查启动器更新吗？
+Check for launcher updates while the app is open.	在启动器打开期间检查更新。
+Check for updates	检查更新
+Checking…	正在检查…
+Chinese client	国服客户端
+Choose DLL files	选择 DLL 文件
+Choose an installation	选择一个安装位置
+Choose another installation	选择其他安装位置
+Choose another installation.	请选择其他安装位置。
+Choose how you sign in	选择登录方式
+Choose programs	选择程序
+Choose your installation	选择你的安装位置
+Choose your public name for this new GW2 account.	为这个新的激战2账号选择你的公开名称。
+Close	关闭
+Close editor	关闭编辑器
+Close launcher. Games keep running.	关闭启动器。游戏会继续运行。
+Code	验证码
+Confirm removal	确认移除
+Continue	继续
+Continue launch	继续启动
+Could not apply Always on top: %s	无法应用“窗口置顶”：%s
+Could not initialize the launcher renderer.	无法初始化启动器的渲染器。
+Could not open the link.	无法打开该链接。
+Create account & play	创建账号并开始游戏
+DLL files	DLL 文件
+DLLs	DLL
+Detected	已检测到
+Detected Proton	检测到的 Proton
+Detected prefixes	检测到的前缀
+Detected runners	检测到的运行器
+Detection failed. Browse for Gw2-64.exe.	检测失败。请浏览选择 Gw2-64.exe。
+Directory containing system.reg	包含 system.reg 的目录
+Directory containing the proton executable	包含 proton 可执行文件的目录
+Each account can use a different proxy. Changes apply on its next launch. Requires mitmproxy.	每个账号可以使用不同的代理。更改在该账号下次启动时生效。需要 mitmproxy。
+Edit account	编辑账号
+Email	邮箱
+Email: %s	邮箱：%s
+Enter the five-digit code from your email.	请输入邮件中的五位验证码。
+Enter the five-digit code from your text message.	请输入短信中的五位验证码。
+Enter the six-digit code from your authenticator.	请输入身份验证器中的六位验证码。
+Epic	Epic
+Find again	重新查找
+Finding GW2…	正在查找激战2…
+Fix the game location to continue	修复游戏位置以继续
+Fix the game location to continue launching.	请修复游戏位置以继续启动。
+For KongZhong and WeGame accounts.	用于空中网和 WeGame 账号。
+For the China client. Signs in on its KongZhong login.	用于国服客户端。通过其空中网登录界面登录。
+Full path to Gw2-64.exe	Gw2-64.exe 的完整路径
+GW2_ACCOUNT	
+Game executable	游戏可执行文件
+Global DLLs load first, then account DLLs. Duplicate files load once. Changes apply next launch.	先加载全局 DLL，再加载账号 DLL。重复的文件只加载一次。更改在下次启动时生效。
+Global arguments	全局启动参数
+Global arguments apply unless overridden here.	除非在此处覆盖，否则使用全局启动参数。
+Global:	全局：
+Guild Wars 2	激战2
+HTTP CONNECT	HTTP CONNECT
+HTTPS CONNECT	HTTPS CONNECT
+Hide Guild Wars 2 row	隐藏激战2一行
+Hide sign-in window	隐藏登录窗口
+Hide the GW2 sign-in window unless it needs your attention.	除非需要你处理，否则隐藏激战2登录窗口。
+Hide the Guild Wars 2 row above your accounts. It returns while that game runs or needs attention.	隐藏账号列表上方的激战2一行。该游戏运行或需要你处理时会重新显示。
+Install mitmproxy 12.2 or newer, bubblewrap and iproute2. Leave blank to find mitmdump on PATH. Proxy routing is enabled separately in each account.	请安装 mitmproxy 12.2 或更高版本、bubblewrap 和 iproute2。留空则在 PATH 中查找 mitmdump。代理路由需在每个账号中单独开启。
+Install mitmproxy from mitmproxy.org. Leave blank to find mitmdump.exe beside the launcher or on PATH. Proxy routing is enabled separately in each account.	请从 mitmproxy.org 安装 mitmproxy。留空则在启动器旁或 PATH 中查找 mitmdump.exe。代理路由需在每个账号中单独开启。
+Keep saved	保留已保存的
+Keep the launcher above other windows.	让启动器保持在其他窗口之上。
+Kill all launched games and cancel queued launches	强制结束所有已启动的游戏并取消排队中的启动
+Kill game process	强制结束游戏进程
+KongZhong	空中网
+KongZhong account	空中网账号
+Last played %lld d ago	上次游玩：%lld 天前
+Last played %lld h ago	上次游玩：%lld 小时前
+Last played %lld min ago	上次游玩：%lld 分钟前
+Last played %lld s ago	上次游玩：%lld 秒前
+Later	稍后
+Launch GW2	启动激战2
+Launch account	启动账号
+Launch all	全部启动
+Launch selected	启动所选
+Launcher updates	启动器更新
+Look for Guild Wars 2 in its usual places. A valid choice is kept.	在常见位置查找激战2。已有的有效选择会保留。
+Minimize	最小化
+Minimize the launcher once the games you launched are running.	你启动的游戏开始运行后，将启动器最小化。
+Minimize when the game starts	游戏启动时最小化
+Needs attention	需要处理
+New password will be saved.	将保存新密码。
+Nickname	昵称
+No	否
+No installation found. Browse for Gw2-64.exe.	未找到安装。请浏览选择 Gw2-64.exe。
+No proxy password saved.	未保存代理密码。
+Opening accounts…	正在打开账号…
+Opening…	正在打开…
+Optional	可选
+Optional full path to Linux mitmdump	Linux mitmdump 的完整路径（可选）
+Optional full path to mitmdump.exe	mitmdump.exe 的完整路径（可选）
+Optional: KongZhong or WeGame Gw2-64.exe	可选：空中网或 WeGame 的 Gw2-64.exe
+Password	密码
+Password saved. Enter a username to use it.	密码已保存。请输入用户名以使用它。
+Password saved. Leave blank to keep it.	密码已保存。留空则保留。
+Proton directory	Proton 目录
+Proxy port (1–65535).	代理端口（1–65535）。
+Queued	排队中
+Ready	就绪
+Reconnect Epic	重新连接 Epic
+Reconnect Steam	重新连接 Steam
+Remove	移除
+Remove account	移除账号
+Remove saved proxy password	移除已保存的代理密码
+Remove?	移除？
+Replace:	替换：
+SOCKS5	
+Saved password will be removed.	将移除已保存的密码。
+Seconds to wait before starting it, after the previous program. Drag, or double-click to type.	在上一个程序之后，等待多少秒再启动它。拖动调整，或双击输入。
+Settings	设置
+Settings · Update available	设置 · 有可用更新
+Several installations were found. Choose one.	找到了多个安装位置。请选择一个。
+Show PID	显示 PID
+Show game	显示游戏
+Sign in through GW2. Uses your remembered login if available.	通过激战2登录。如有已记住的登录信息则会使用。
+Sign in to Epic	登录 Epic
+Sign in to Steam	登录 Steam
+Signs in through WeGame. Keep WeGame open.	通过 WeGame 登录。请保持 WeGame 打开。
+Started when you launch a game, unless already running, e.g. Blish HUD. Global programs start with every launch, then the account's own. Each waits its delay in seconds after the previous one. They keep running when the launcher closes and get the launcher's rights, the same as the game.	启动游戏时一并启动（已在运行则不启动），例如 Blish HUD。每次启动时先启动全局程序，再启动该账号自己的程序。每个程序在上一个程序之后等待其延迟秒数。启动器关闭后它们会继续运行，并与游戏一样获得启动器的权限。
+Steam Guard	Steam 令牌
+Steam password	Steam 密码
+TCP uses this proxy without decrypting game traffic. SOCKS5 also supports UDP; HTTP proxies block UDP.	TCP 通过此代理传输，不会解密游戏流量。SOCKS5 也支持 UDP；HTTP 代理会阻止 UDP。
+The Chinese client's Gw2-64.exe is missing or incomplete.	国服客户端的 Gw2-64.exe 缺失或不完整。
+The file picker could not open. Try again.	无法打开文件选择器。请重试。
+Update available	有可用更新
+Update now	立即更新
+Updating…	正在更新…
+Use QR code	使用二维码
+Use a proxy for this account	为此账号使用代理
+Use and launch	使用并启动
+Use password	使用密码
+Use this installation	使用此安装位置
+Verification code	验证码
+Verify & continue	验证并继续
+Version %s	版本 %s
+Version %s available	版本 %s 可用
+Version %s · Up to date	版本 %s · 已是最新
+Where is Guild Wars 2?	激战2在哪里？
+Windows DNS and other applications use their existing connection.	Windows DNS 和其他应用程序使用其现有连接。
+Wine and its child processes use an isolated connection, including DNS. The first launch copies your Wine prefix for this account. Requires mitmproxy, bubblewrap and iproute2.	Wine 及其子进程使用隔离的连接，包括 DNS。首次启动时会为此账号复制你的 Wine 前缀。需要 mitmproxy、bubblewrap 和 iproute2。
+Wine prefix	Wine 前缀
+Yes	是
+Your saved accounts have not been changed.	你保存的账号没有被更改。
+dll;DLL	
+e.g. -windowed -loadmapinfo	例如 -windowed -loadmapinfo
+exe;EXE	
+mitmdump executable	mitmdump 可执行文件
+page	
+proxy.example.com	
+wine, umu-run, or an absolute path	wine、umu-run 或绝对路径
+# src/linux_setup.hpp
+$HOME/	
+${HOME}/	
+%s-prefix	
+.config/lutris/games	
+.local/share	
+.steam/root	
+.steam/steam	
+.var/app/com.usebottles.bottles/data/bottles/bottles	
+.var/app/com.valvesoftware.Steam/data/Steam	
+.wine	
+.yaml	
+.yml	
+Choose a Proton folder containing proton.	请选择包含 proton 的 Proton 文件夹。
+Choose a Wine prefix containing system.reg.	请选择包含 system.reg 的 Wine 前缀。
+Choose an installed Wine or UMU runner.	请选择已安装的 Wine 或 UMU 运行器。
+Games	
+Gw2-64.exe	
+HOME	
+PROTONPATH	
+Steam	Steam
+WINEPREFIX	
+XDG_DATA_HOME	
+bin/wine	
+bottles/bottles	
+compatibilitytools.d	
+drive_c	
+drive_c/Games	
+drive_c/Program Files	
+drive_c/Program Files (x86)	
+lutris/runners/proton	
+lutris/runners/wine	
+path	
+pfx	
+steamapps/common	
+steamapps/common/Guild Wars 2/Gw2-64.exe	
+steamapps/compatdata/1284210/pfx	
+steamapps/libraryfolders.vdf	
+umu-run	
+umu/compatibilitytools	
+wine64	
+# src/platform.cppm
+%s account	
+%s is already open.	%s 已经打开。
+%s/input	
+--input	
+.%s.tmp	
+0123456789abcdef	
+ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/	
+ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-	
+ArenaNet	
+ArenaNet_Gr_Window_Class	
+Authorization:	
+Cache-Control	
+Cancelled.	已取消。
+Cannot configure Wine/Proton.	无法配置 Wine/Proton。
+Cannot create a private helper pipe.	无法创建私有辅助程序管道。
+Cannot find the Documents directory.	找不到“文档”目录。
+Cannot find the application data directory.	找不到应用程序数据目录。
+Cannot find your home directory.	找不到你的主目录。
+Cannot initialize account encryption.	无法初始化账号加密。
+Cannot open the account directory lock.	无法打开账号目录锁。
+Cannot open the account directory.	无法打开账号目录。
+Cannot open the private helper pipe.	无法打开私有辅助程序管道。
+Cannot prepare the game helper.	无法准备游戏辅助程序。
+Cannot protect the account directory.	无法保护账号目录。
+Cannot save the account catalog.	无法保存账号目录。
+Content-Type: application/x-www-form-urlencoded	
+Could not allocate request headers.	无法分配请求头。
+Could not open a secure connection.	无法建立安全连接。
+Could not reach the service (Windows error %s). Check your connection and try again.	无法连接到服务（Windows 错误 %s）。请检查你的网络连接后重试。
+Could not reach the service (curl error %s). Check your connection and try again.	无法连接到服务（curl 错误 %s）。请检查你的网络连接后重试。
+Could not set the secure connection timeouts.	无法设置安全连接超时。
+Could not set the secure request policy.	无法设置安全请求策略。
+Could not start %s (error %s).	无法启动 %s（错误 %s）。
+Could not verify the update download.	无法验证更新下载。
+GET	
+GML1	
+GW2MultiLauncher/	
+Invalid authorization header.	授权头无效。
+Invalid encrypted account.	加密的账号无效。
+Invalid request header.	请求头无效。
+Invalid response header name.	响应头名称无效。
+Invalid service response header.	服务响应头无效。
+Invalid service response.	服务响应无效。
+POST	
+Secure random generation failed.	安全随机数生成失败。
+Text contains a null character.	文本包含空字符。
+Text is not valid UTF-8.	文本不是有效的 UTF-8。
+The GW2 update service is unavailable. Try again shortly.	激战2更新服务不可用。请稍后重试。
+The account contains invalid text.	账号包含无效的文本。
+The account could not be decrypted or saved. Check your desktop keyring.	无法解密或保存账号。请检查你的桌面密钥环。
+The desktop keyring contains an invalid launcher key.	桌面密钥环中的启动器密钥无效。
+The desktop keyring could not save the launcher key.	桌面密钥环无法保存启动器密钥。
+The game helper closed. Check your Wine/Proton runner.	游戏辅助程序已关闭。请检查你的 Wine/Proton 运行器。
+The game helper could not start. Check your installation and Wine/Proton runner.	游戏辅助程序无法启动。请检查你的安装和 Wine/Proton 运行器。
+The game helper exited (code %s). Check that your runner can access the installed helper.	游戏辅助程序已退出（代码 %s）。请确认你的运行器可以访问已安装的辅助程序。
+The game helper input closed.	游戏辅助程序的输入已关闭。
+The game helper output closed.	游戏辅助程序的输出已关闭。
+The game helper output pipe is unavailable.	游戏辅助程序的输出管道不可用。
+The game helper stopped reading its input.	游戏辅助程序停止读取其输入。
+The game helper stopped reading its private pipe.	游戏辅助程序停止读取其私有管道。
+The launcher key is missing from your desktop keyring. Restore the keyring before opening these accounts.	你的桌面密钥环中缺少启动器密钥。打开这些账号前请先恢复密钥环。
+The service request timed out.	服务请求超时。
+The service response is too large.	服务响应过大。
+This encrypted account format is unsupported. Add the account again on this system.	不支持此加密账号格式。请在此系统上重新添加该账号。
+Too many service response headers.	服务响应头过多。
+UTF-16LE	
+UTF-8	
+Unlock the desktop keyring and try again.	请解锁桌面密钥环后重试。
+Windows could not open this account. Use the Windows user who saved it.	Windows 无法打开此账号。请使用保存它的 Windows 用户。
+application	
+github.com	
+gw2-multi-launcher	
+http://	
+https	
+https://	
+instance.lock	
+io.github.Dvow.GW2MultiLauncher	
+no-cache	
+pipe-XXXXXX	
+vault	
+# src/update_common.cppm
+%s.old	
+.Steam.dll	
+/DIR=%s	
+/NORESTART	
+/SILENT	
+/UPDATEPID=%s	
+Cannot locate the installed launcher.	找不到已安装的启动器。
+Could not start the update installer.	无法启动更新安装程序。
+GW2MultiLauncher.Host.exe	
+GW2MultiLauncher.Native.dll	
+GW2MultiLauncher.Steam.dll	
+GW2MultiLauncher.Steam.exe	
+GW2MultiLauncher.exe	
+Reopen	重新打开
+The release has an invalid version.	该版本的版本号无效。
+The update was installed. Reopen	更新已安装。请重新打开
+Uninstall %s.exe	
+install.log	
+launcher-update	
+steam/	
+steam/GW2MultiLauncher.Steam.dll	
+steam/GW2MultiLauncher.Steam.exe	
+unins000.exe	
+# native/Bridge.cppm
+%skx-native.dll	
+.Native.15	
+AN-Mutex-Window-Guild Wars 2	
+D:P(A;;GA;;;%s)	
+Local\\	
+SteamAppId	
+SteamGameId	
+SteamOverlayGameId	
+# src/accounts.cppm
+%s.txt	
+-%s is managed by the launcher or is a maintenance option.	-%s 由启动器管理，或是维护选项。
+-StreamingClient	
+-mumble	
+-provider	
+-shareArchive	
+-webdisablecache	
+.dll	
+.exe	
+A path or argument is too long.	路径或参数过长。
+A saved platform identity is invalid.	已保存的平台身份无效。
+Accounts	账号
+AlwaysOnTop	
+Arguments	启动参数
+Both executables are the Chinese client. Choose one.	两个可执行文件都是国服客户端。请选择一个。
+Both executables are the global client. Choose one.	两个可执行文件都是国际服客户端。请选择一个。
+ChinaGamePath	
+Choose DLL files using full paths shorter than 4096 bytes.	请使用短于 4096 字节的完整路径选择 DLL 文件。
+Choose an existing Wine prefix containing system.reg.	请选择一个包含 system.reg 的现有 Wine 前缀。
+Choose an installed Gw2-64.exe.	请选择已安装的 Gw2-64.exe。
+Choose at most 16 DLLs.	最多选择 16 个 DLL。
+Choose at most 16 programs.	最多选择 16 个程序。
+Choose mitmdump using its full executable path.	请使用 mitmdump 可执行文件的完整路径选择它。
+Choose programs (.exe) using full paths shorter than 4096 bytes.	请使用短于 4096 字节的完整路径选择程序（.exe）。
+Choose wine, umu-run, or an absolute Wine runner path.	请选择 wine、umu-run 或 Wine 运行器的绝对路径。
+Choose your installed Proton directory.	请选择已安装的 Proton 目录。
+Close the quoted value in launch arguments.	请闭合启动参数中带引号的值。
+DLL is missing or unreadable: %s	DLL 缺失或无法读取：%s
+Delay	
+Delay programs by at most %s seconds.	程序延迟最多 %s 秒。
+Dlls	
+Enabled	
+Enter a proxy username when setting a proxy password.	设置代理密码时请输入代理用户名。
+Enter a valid email and a password of 1–255 characters.	请输入有效的邮箱和 1–255 个字符的密码。
+Enter this account's login and password.	请输入此账号的登录名和密码。
+Enter your account and a password of 1–255 characters.	请输入你的账号和 1–255 个字符的密码。
+Give -mumble one name of up to 64 letters, digits, - _ or ., such as -mumble MumbleLink2.	-mumble 只能跟一个名称，最多 64 个字母、数字或 - _ .，例如 -mumble MumbleLink2。
+GW2MultiLauncher-%s	
+GW2WGLauncher.exe	
+GamePath	
+Height	
+HideGameRow	
+HideLogin	
+Host	主机
+Id	
+Identity	
+Invalid account ID.	账号 ID 无效。
+Invalid account record.	账号记录无效。
+Invalid authentication field.	身份验证字段无效。
+Invalid authentication record.	身份验证记录无效。
+Invalid credential record.	凭据记录无效。
+Keep launch arguments on one line, up to 2048 characters.	启动参数请保持在一行内，最多 2048 个字符。
+Label	
+MinimizeOnLaunch	
+Mitmdump	
+PATH	
+Passwords may not contain a null character.	密码不能包含空字符。
+Path	
+Port	端口
+Portal	
+Positioned	
+Prefix	
+Programs	程序
+ProtectedCredentials	
+ProtectedPassword	
+Protocol	
+Proton	
+Provider	
+Proxy	
+Runner	运行器
+Scale	
+ShowPid	
+Sign in to this platform account before saving.	保存前请先登录此平台账号。
+Start arguments with a flag, such as -windowed.	启动参数请以选项开头，例如 -windowed。
+The GW2 update service returned an invalid build number.	激战2更新服务返回了无效的版本号。
+The account catalog contains an invalid account.	账号目录中包含无效的账号。
+The account catalog contains an invalid or duplicate account ID.	账号目录中包含无效或重复的账号 ID。
+The account catalog is corrupt. Restore accounts.json from your backup.	账号目录已损坏。请从备份中恢复 accounts.json。
+The account catalog is invalid.	账号目录无效。
+The account catalog is too large.	账号目录过大。
+The account limit is 100.	账号上限为 100 个。
+The platform session is invalid. Sign in again.	平台会话无效。请重新登录。
+The saved proxy settings are invalid.	已保存的代理设置无效。
+This account catalog version is unsupported.	不支持此账号目录版本。
+This account no longer exists.	此账号已不存在。
+This platform account is already saved.	此平台账号已保存。
+This saved platform session is invalid. Sign in again.	此已保存的平台会话无效。请重新登录。
+Unknown account provider. Update the launcher.	未知的账号提供方。请更新启动器。
+UpdatePending	
+UpdatePendingPath	
+Use arguments such as -windowed or -loadmapinfo.	请使用 -windowed 或 -loadmapinfo 等参数。
+Username	用户名
+Version	
+WeGame	WeGame
+WeGame accounts cannot use a proxy.	WeGame 账号不能使用代理。
+WeGame accounts save no login.	WeGame 账号不保存登录信息。
+Width	
+accounts.json	
+authlogin	
+authpassword	
+authserver	
+authsrv	
+authtype	
+autologin	
+dat	
+diag	
+email	
+epicapp	
+epicenv	
+epiclocale	
+epicportal	
+epicsandboxid	
+epicuserid	
+epicusername	
+gw2-64.exe	
+image	
+localdat	
+login	
+mumble	
+nopatchui	
+password	
+password2	
+portal	
+prefreset	
+proton	
+provider	
+repair	
+sharearchive	
+socks5	
+steam	
+system.reg	
+uninstall	
+verify	
+webdisablecache	
+wine	
+writer.lock	
+played	
+# src/package_update.hpp
+--disable-internal-agent	
+--noconfirm	
+--yes	
+/usr/bin/apt-get	
+/usr/bin/pacman	
+/usr/bin/pkexec	
+ARCH	
+Authorization failed. Check your desktop's polkit agent. See %s	授权失败。请检查桌面的 polkit 代理。参见 %s
+Cannot create the installation log.	无法创建安装日志。
+Cannot read the installation result. See %s	无法读取安装结果。参见 %s
+Could not start the package installer.	无法启动软件包安装程序。
+Could not start the package installer. Check that pkexec is installed.	无法启动软件包安装程序。请确认已安装 pkexec。
+DEB	
+Install a launcher package to enable updates.	请安装启动器软件包以启用更新。
+Installation cancelled.	已取消安装。
+Package installation failed (%s). See %s	软件包安装失败（%s）。参见 %s
+The update package does not match this installation.	更新软件包与此安装不匹配。
+install	
+linux-arch/	
+linux-deb/	
+package-format	
+# native/proxy_runtime.hpp
+--set %s	
+-q --set server=false --set flow_detail=0 --set termlog_verbosity=error -s %s	
+KXPROXY	
+KXPROXY ALIVE	
+KXPROXY ERROR 1020	
+KXPROXY ERROR 1021	
+KXPROXY ERROR 1022	
+KXPROXY PROBE	
+KXPROXY READY	
+KXProxy-1-%s	
+Local\\%s	
+\\\\.\\pipe\\%s	
+kx_proxy_pipe=%s	
+{"pid":%s,"owner":%s,"proxy":	
+# src/app.cppm
+--steam-session	
+A GW2 update is available. Close this installation's game clients, then launch again.	激战2有可用更新。请关闭此安装位置的游戏客户端，然后重新启动。
+A client exited before all accounts finished launching.	在所有账号完成启动前，有一个客户端退出了。
+A previous GW2 download needs to finish. Close this installation's game clients, then launch again.	需要先完成之前的激战2下载。请关闭此安装位置的游戏客户端，然后重新启动。
+Add the free Guild Wars 2 game to this Steam account's library, then launch again.	请将免费的激战2游戏添加到此 Steam 账号的库中，然后重新启动。
+Another GW2 client is blocking new ones: one opened outside this launcher, or one that failed before signing in. Close it, then try again.	另一个激战2客户端阻止了新客户端：它是在此启动器之外打开的，或是在登录前失败的。请关闭它，然后重试。
+Check for updates before installing.	安装前请先检查更新。
+Check your email	请查看你的邮箱
+Checking Steam Guard…	正在检查 Steam 令牌…
+Checking verification code…	正在检查验证码…
+Choose a GW2 display name	选择激战2显示名称
+Choose the Chinese client's Gw2-64.exe in Settings.	请在设置中选择国服客户端的 Gw2-64.exe。
+Choose your Gw2-64.exe.	请选择你的 Gw2-64.exe。
+Client exited	客户端已退出
+Close every GW2 client before updating, and check that Gw2.dat is writable.	更新前请关闭所有激战2客户端，并确认 Gw2.dat 可写入。
+Close this account's client before editing it.	编辑前请先关闭此账号的客户端。
+Close this account's client before removing it.	移除前请先关闭此账号的客户端。
+Close your clients before changing the game installation.	更改游戏安装位置前请先关闭你的客户端。
+Closing GW2 to install its update…	正在关闭激战2以安装更新…
+Restarting to install an update…	正在重启以安装更新…
+Connecting to Epic…	正在连接 Epic…
+Connecting to Steam…	正在连接 Steam…
+Could not confirm that GW2 exited. %s	无法确认激战2已退出。%s
+Could not open the Epic sign-in page.	无法打开 Epic 登录页面。
+Could not terminate this GW2 process. Try Close again or end it in Task Manager.	无法结束此激战2进程。请再次点击“关闭”，或在任务管理器中结束它。
+Creating GW2 account…	正在创建激战2账号…
+DLL %s could not be copied or loaded (Windows error %s). Check the file, temporary-folder access, its 64-bit dependencies, and initialization. Close this client before retrying.	无法复制或加载 DLL %s（Windows 错误 %s）。请检查该文件、临时文件夹访问权限、它的 64 位依赖项及初始化。重试前请先关闭此客户端。
+Enter the complete verification code.	请输入完整的验证码。
+Finish signing in and approve Guild Wars 2 in your browser. Your account will appear here automatically.	请在浏览器中完成登录并批准激战2。你的账号会自动出现在这里。
+Finish signing in before saving.	保存前请先完成登录。
+Finish signing in before updating the launcher.	更新启动器前请先完成登录。
+GW2 needs attention. Select Show to open its window.	激战2需要你处理。请点击“显示游戏”打开其窗口。
+GW2 sign-in returned error %s. Select Show to check its window.	激战2登录返回错误 %s。请点击“显示游戏”查看其窗口。
+GW2 timed out. Select Show to check its window.	激战2超时。请点击“显示游戏”查看其窗口。
+GW2's native interface has changed. Update the launcher before signing in.	激战2的原生接口已更改。登录前请先更新启动器。
+GW2's platform connection could not be prepared. Close the game and try again.	无法准备激战2的平台连接。请关闭游戏后重试。
+GW2's update did not reach the current build. Try again.	激战2的更新未达到当前版本。请重试。
+Invalid GW2 build number.	激战2版本号无效。
+Invalid Steam QR code.	Steam 二维码无效。
+%s could not be copied or loaded (Windows error %s). Check temporary-folder access and your antivirus. Close this client before retrying.	无法复制或加载 %s（Windows 错误 %s）。请检查临时文件夹访问权限和你的杀毒软件。重试前请先关闭此客户端。
+KongZhong and WeGame accounts need the Chinese client. Choose its Gw2-64.exe in Settings.	空中网和 WeGame 账号需要国服客户端。请在设置中选择其 Gw2-64.exe。
+Launch cancelled	已取消启动
+Loading DLL %s…	正在加载 DLL %s…
+Loading DLLs…	正在加载 DLL…
+Loading %s…	正在加载 %s…
+Opening game…	正在打开游戏…
+Preparing account proxy…	正在准备账号代理…
+Proxy setup failed. Check mitmproxy 12.2+, Python 3, bubblewrap and iproute2, and free space for this account's Wine prefix. Close any other launch of this account and retry.	代理设置失败。请检查 mitmproxy 12.2+、Python 3、bubblewrap 和 iproute2，以及此账号 Wine 前缀所需的可用空间。请关闭此账号的其他启动后重试。
+Proxy setup failed. Install mitmproxy, select mitmdump.exe in Settings, and allow its Windows capture helper.	代理设置失败。请安装 mitmproxy，在设置中选择 mitmdump.exe，并允许其 Windows 捕获辅助程序。
+Review GW2's agreement	查看激战2的协议
+Running	运行中
+Scan with the Steam mobile app.	请用 Steam 手机应用扫描。
+Select an account to launch.	请选择要启动的账号。
+Sign in from this account's editor before saving.	保存前请在此账号的编辑器中登录。
+Sign in through GW2	通过激战2登录
+Sign-in needs attention. Select Show; no automatic retry was sent.	登录需要你处理。请点击“显示游戏”；没有发送自动重试。
+Signing in through WeGame…	正在通过 WeGame 登录…
+Signing in…	正在登录…
+Starting updater…	正在启动更新程序…
+Starting…	正在启动…
+Steam could not authenticate this account. Edit it and sign in again.	Steam 无法验证此账号。请编辑它并重新登录。
+Steam returned a different account identity. Reconnect this saved account.	Steam 返回了不同的账号身份。请重新连接这个已保存的账号。
+Could not connect to Steam. Check your internet connection, then launch again. There is no need to sign in again.	无法连接到 Steam。请检查你的网络连接，然后重新启动。无需重新登录。
+Steam returned a ticket larger than GW2's native login accepts. Update the launcher.	Steam 返回的凭据超出了激战2原生登录可接受的大小。请更新启动器。
+Steam returned an invalid account session.	Steam 返回了无效的账号会话。
+Terminating…	正在结束…
+The Windows capture helper cannot run under Wine. Reinstall the complete Linux launcher package.	Windows 捕获辅助程序无法在 Wine 下运行。请重新安装完整的 Linux 启动器软件包。
+The Wine/Proton runner changed the helper protocol. Use wine or umu-run directly.	Wine/Proton 运行器更改了辅助程序协议。请直接使用 wine 或 umu-run。
+The account proxy rejected a connection or could not be reached. Check its address, port, credentials, and allowed destinations. The client was stopped.	账号代理拒绝了连接或无法访问。请检查其地址、端口、凭据和允许的目标。客户端已停止。
+The game helper reported error %s. Check its window before retrying.	游戏辅助程序报告了错误 %s。重试前请查看其窗口。
+The game helper timed out before opening the game. Select Show or Close.	游戏辅助程序在打开游戏前超时。请点击“显示游戏”或“关闭”。
+The isolated proxy network could not start. Check that bubblewrap can create user/network namespaces and /dev/net/tun is available. Select a working Linux mitmdump 12.2+ executable in Settings. The client was not started.	隔离的代理网络无法启动。请确认 bubblewrap 能创建用户/网络命名空间，并且 /dev/net/tun 可用。请在设置中选择可用的 Linux mitmdump 12.2+ 可执行文件。客户端未启动。
+The official GW2 updater did not finish. Launch again to resume it.	激战2官方更新程序没有完成。请重新启动以继续更新。
+The official GW2 updater ended with an error (code %s). If GW2 showed an error window, it says why; the same text is at the end of ArenaNet.log in GW2's folder under AppData\\Roaming. Launch again to retry.	激战2官方更新程序出错结束（代码 %s）。如果激战2显示了错误窗口，窗口中会说明原因；同样的内容位于 AppData\\Roaming 下激战2文件夹中 ArenaNet.log 的末尾。请重新启动以重试。
+The official GW2 updater ended with an error (code %s). If GW2 showed an error window, it says why; the same text is at the end of ArenaNet.log in GW2's folder under AppData/Roaming inside the Wine prefix. Launch again to retry.	激战2官方更新程序出错结束（代码 %s）。如果激战2显示了错误窗口，窗口中会说明原因；同样的内容位于 Wine 前缀内 AppData/Roaming 下激战2文件夹中 ArenaNet.log 的末尾。请重新启动以重试。
+GW2 cannot update while its Settings.json holds %s. Remove that from "arguments" in AppData\\Roaming\\Guild Wars 2\\Settings.json, then launch again. The launcher adds what it needs itself.	激战2的 Settings.json 中含有 %s 时无法更新。请从 AppData\\Roaming\\Guild Wars 2\\Settings.json 的 "arguments" 中删除它，然后重新启动。启动器会自行添加所需的参数。
+GW2 cannot update while its Settings.json holds %s. Remove that from "arguments" in AppData/Roaming/Guild Wars 2/Settings.json inside the Wine prefix, then launch again. The launcher adds what it needs itself.	激战2的 Settings.json 中含有 %s 时无法更新。请从 Wine 前缀内 AppData/Roaming/Guild Wars 2/Settings.json 的 "arguments" 中删除它，然后重新启动。启动器会自行添加所需的参数。
+-noPatch	
+-shareArchive and -noPatch	-shareArchive 和 -noPatch
+The proxy capture helper stopped responding. The client was stopped; retry the launch.	代理捕获辅助程序停止响应。客户端已停止；请重新启动。
+The requested accounts are already running.	所请求的账号已在运行。
+The saved Steam session expired or was revoked. Edit this account and reconnect Steam.	已保存的 Steam 会话已过期或被撤销。请编辑此账号并重新连接 Steam。
+The verification code must contain only digits.	验证码只能包含数字。
+This Steam Guard request has ended. Sign in again.	此 Steam 令牌请求已结束。请重新登录。
+This account already has a client.	此账号已有一个客户端。
+This account is not waiting for a GW2 display name.	此账号没有在等待激战2显示名称。
+This account is queued to launch.	此账号正在排队启动。
+This account needs Guild Wars 2. Choose its Gw2-64.exe in Settings.	此账号需要激战2。请在设置中选择其 Gw2-64.exe。
+This account provider is not available yet.	此账号提供方暂不可用。
+This verification request has ended. Check the account's status.	此验证请求已结束。请查看账号的状态。
+Unexpected Steam helper response.	Steam 辅助程序返回了意外的响应。
+Unexpected game helper status.	游戏辅助程序状态异常。
+Unknown GW2 verification request. Select Show to check the game.	未知的激战2验证请求。请点击“显示游戏”查看游戏。
+Updated	已更新
+Updating GW2…	正在更新激战2…
+Use 3–27 letters and single spaces for your GW2 display name.	激战2显示名称请使用 3–27 个字母和单个空格。
+Verification required	需要验证
+Wait for the current action to finish.	请等待当前操作完成。
+Wait for the current launch or update to finish.	请等待当前启动或更新完成。
+Wait for the current launch to finish before changing the game installation.	更改游戏安装位置前，请等待当前启动完成。
+Wait for the current launch to finish before updating the launcher.	更新启动器前，请等待当前启动完成。
+Wait for the current update to finish.	请等待当前更新完成。
+Waiting for WeGame…	正在等待 WeGame…
+WeGame accounts need the WeGame edition of the game. In Settings, choose the Gw2-64.exe in your WeGame game folder.	WeGame 账号需要 WeGame 版游戏。请在设置中选择 WeGame 游戏文件夹中的 Gw2-64.exe。
+WeGame runs Guild Wars 2 as administrator. Run the launcher as administrator, then launch again.	WeGame 会以管理员身份运行激战2。请以管理员身份运行启动器，然后重新启动。
+WeGame runs one Guild Wars 2 at a time. Close the running one first.	WeGame 一次只能运行一个激战2。请先关闭正在运行的那个。
+WeGame's GW2WGLauncher.exe is missing beside Gw2-64.exe. Repair the game in WeGame.	Gw2-64.exe 旁缺少 WeGame 的 GW2WGLauncher.exe。请在 WeGame 中修复游戏。
+Wine could not resolve the game path.	Wine 无法解析游戏路径。
+You signed in to a different Epic account. Reconnect with this account, or add a separate account instead.	你登录了另一个 Epic 账号。请用此账号重新连接，或改为添加一个单独的账号。
+gw2	
+sessions.txt	
+# src/session.cppm
+" -silent	
+-all	
+.Host.exe	
+.Native.dll	
+.Steam	
+.Steam.exe	
+/bin/	
+/lib/	
+/lib64/	
+/opt/	
+/run/host	
+/run/host%s	
+/sbin/	
+/usr/	
+ActiveUser	
+AutoLoginUser	
+Cannot find the launcher installation.	找不到启动器的安装位置。
+Closed session input.	会话输入已关闭。
+DLL directories cannot contain ':' when using Wine / Proton.	使用 Wine / Proton 时，DLL 目录不能包含“:”。
+Duplicate display name.	显示名称重复。
+Duplicate verification code.	验证码重复。
+GAMEID	
+Install mitmproxy 12.2 or newer and select its Linux mitmdump executable in Settings.	请安装 mitmproxy 12.2 或更高版本，并在设置中选择其 Linux mitmdump 可执行文件。
+Install mitmproxy and select mitmdump.exe in Settings before using an account proxy.	使用账号代理前，请安装 mitmproxy 并在设置中选择 mitmdump.exe。
+Invalid Linux proxy request.	Linux 代理请求无效。
+Invalid Steam helper response.	Steam 辅助程序响应无效。
+Invalid Steam ticket.	Steam 凭据无效。
+Invalid display name request.	显示名称请求无效。
+Invalid display name.	显示名称无效。
+Invalid game helper status.	游戏辅助程序状态无效。
+Invalid session request.	会话请求无效。
+Invalid verification code.	验证码无效。
+Linux proxies require Python 3, bubblewrap, iproute2 and coreutils.	Linux 代理需要 Python 3、bubblewrap、iproute2 和 coreutils。
+Linux proxy support requires Python 3 and the complete launcher package.	Linux 代理支持需要 Python 3 和完整的启动器软件包。
+No display name requested.	没有请求显示名称。
+PROTON_VERB	
+STEAM_COMPAT_LIBRARY_PATHS	
+Steam authentication failed.	Steam 身份验证失败。
+SteamExe	
+The Steam sign-in request is not ready.	Steam 登录请求尚未就绪。
+The game helper is missing. Reinstall the complete launcher package.	缺少游戏辅助程序。请重新安装完整的启动器软件包。
+The game is not ready for a verification code.	游戏尚未准备好接收验证码。
+The launch request is too large.	启动请求过大。
+The mitmdump executable is missing. Update its path in Settings.	缺少 mitmdump 可执行文件。请在设置中更新其路径。
+The proxy helper script is missing. Reinstall the complete launcher package.	缺少代理辅助脚本。请重新安装完整的启动器软件包。
+The proxy settings are too large.	代理设置过大。
+UMU_LOG	
+Unexpected Steam identity.	Steam 身份异常。
+WINEDEBUG	
+bwrap	
+cp	
+host	
+ip	
+kx_proxy.py	
+kx_proxy_linux.py	
+kx_proxy_pipe.py	
+mitmdump	
+mitmdump.exe	
+pid	
+port	
+protocol	
+proxy-prefixes	
+python3	
+runinprefix	
+steam.exe	
+username	
+warn	
+# native/Host.cppm
+-dat %s	
+-dll-%016llx-	
+-image -dat %s	
+\\Guild Wars 2\\Settings.json	
+# native/patch_flags.hpp
+nopatch	
+.%016llx.part	
+.%lu.tmp	
+.restart.%lu	
+.new	
+.txt	
+WG2InputWin	
+\\GW2WGLauncher.exe	
+\\Gw2.dat	
+\\Lock.dat	
+net	
+# src/windows_setup.hpp
+.item	
+AppDataPath	
+Epic/EpicGamesLauncher/Data	
+Epic/UnrealEngineLauncher/LauncherInstalled.dat	
+GuildWars2	
+InstallLocation	
+InstallPath	
+LOCALAPPDATA	
+Manifests	
+Program Files	
+Program Files (x86)	
+ProgramData	
+ProgramFiles	
+ProgramFiles(x86)	
+ProgramW6432	
+SOFTWARE\\ArenaNet\\Guild Wars 2	
+SOFTWARE\\Epic Games\\EpicGamesLauncher	
+SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{E7E66EE2-9223-41CD-A296-F7F29C789927}_is1	
+SOFTWARE\\Valve\\Steam	
+SteamLibrary	
+SteamPath	
+USERPROFILE	
+WeGameApps	
+rail_apps	
+steamapps/common/Guild Wars 2	
+# src/update.cppm
+/Dvow/gw2-multi-launcher/releases/latest/download/update.json	
+GitHub returned invalid release information. Try again later.	GitHub 返回了无效的发布信息。请稍后重试。
+GitHub update check failed (HTTP %s). Try again later.	GitHub 更新检查失败（HTTP %s）。请稍后重试。
+The download failed verification. Check for updates and try again.	下载未通过验证。请检查更新后重试。
+The release contains duplicate installers.	该版本包含重复的安装程序。
+The release has an invalid version tag.	该版本的版本标签无效。
+The release installer could not be verified.	无法验证该版本的安装程序。
+This release has no installer for your platform.	该版本没有适用于你的平台的安装程序。
+gw2-multi-launcher_%s_amd64.deb	
+gw2-multi-launcher_%s_win-x64_setup.exe	
+https://github.com	
+https://github.com/Dvow/gw2-multi-launcher/releases/download/%s/%s	
+update.deb	
+update.exe	
+uploaded	
+# auth/steam.cppm
+/IAuthenticationService/	
+/IAuthenticationService/%s/v1/	
+/ISteamDirectory/GetCMListForConnect/v1/?format=json&cellid=0	
+/cmsocket/	
+Approve sign-in in your Steam mobile app.	请在 Steam 手机应用中批准登录。
+BB3	
+BeginAuthSessionViaCredentials	
+BeginAuthSessionViaQR	
+Could not reach Steam. Check your connection and try again.	无法连接到 Steam。请检查你的网络连接后重试。
+DESKTOP	
+Enter the code from Steam's email.	请输入 Steam 邮件中的验证码。
+Enter your Steam Guard code.	请输入你的 Steam 令牌验证码。
+FF2	
+GetPasswordRSAPublicKey	
+HMAC	
+MessageObject	
+PollAuthSessionStatus	
+RSA	
+SHA1	
+Steam did not issue a client sign-in. Try again.	Steam 没有签发客户端登录。请重试。
+Steam did not respond in time. Check your connection and try again.	Steam 未及时响应。请检查你的网络连接后重试。
+Steam disconnected. Sign in again.	Steam 已断开连接。请重新登录。
+Steam returned a ticket larger than GW2's native login accepts.	Steam 返回的凭据超出了激战2原生登录可接受的大小。
+Steam returned an invalid QR code.	Steam 返回了无效的二维码。
+Steam returned an invalid response.	Steam 返回了无效的响应。
+Steam returned an invalid sign-in key.	Steam 返回了无效的登录密钥。
+Steam sent a message that is too large.	Steam 发送的消息过大。
+Steam sent an incomplete message.	Steam 发送了不完整的消息。
+Steam sent an invalid message.	Steam 发送了无效的消息。
+Steam sign-in could not start. Try again.	Steam 登录无法开始。请重试。
+Steam sign-in failed (%s). Sign in again.	Steam 登录失败（%s）。请重新登录。
+Steam sign-in failed (%s). Try signing in again.	Steam 登录失败（%s）。请尝试重新登录。
+Steam sign-in failed. Sign in again.	Steam 登录失败。请重新登录。
+Steam sign-in failed. Try signing in again.	Steam 登录失败。请尝试重新登录。
+Steam signed in to a different account. Reconnect this saved account.	Steam 登录了另一个账号。请重新连接这个已保存的账号。
+The Steam connection could not be secured.	无法保护 Steam 连接。
+The Steam response was interrupted or timed out.	Steam 响应中断或超时。
+The Steam session could not continue. Check your connection and sign in again.	Steam 会话无法继续。请检查你的网络连接并重新登录。
+UpdateAuthSessionWithSteamGuardCode	
+api.steampowered.com	
+client	
+curl_ws_recv	
+curl_ws_send	
+digest	
+english	
+https://api.steampowered.com%s	
+input_protobuf_encoded=%s	
+netfilter	
+s.team	
+websockets	
+wss	
+wss://%s/cmsocket/	
+x-eresult	
+x-eresult:	
+# src/epic.cppm
+/epic/oauth/v2/deviceAuthorization	
+/epic/oauth/v2/token	
+0123456789ABCDEF	
+Basic	
+Epic is limiting sign-in requests. Try again later.	Epic 正在限制登录请求。请稍后重试。
+Epic is temporarily unavailable. Try again later.	Epic 暂时不可用。请稍后重试。
+Epic rejected this sign-in. Reconnect the account in your browser.	Epic 拒绝了此次登录。请在浏览器中重新连接该账号。
+Epic returned a token for a different account or game.	Epic 返回了属于其他账号或游戏的令牌。
+Epic returned an incomplete sign-in response. Try signing in again.	Epic 返回了不完整的登录响应。请尝试重新登录。
+Epic returned an invalid account identity.	Epic 返回了无效的账号身份。
+Epic returned an invalid account token.	Epic 返回了无效的账号令牌。
+Epic returned an invalid authorization token.	Epic 返回了无效的授权令牌。
+Epic returned an invalid browser sign-in address.	Epic 返回了无效的浏览器登录地址。
+Epic returned an invalid sign-in deadline.	Epic 返回了无效的登录期限。
+Epic returned an invalid sign-in response.	Epic 返回了无效的登录响应。
+Epic returned an unreadable response. Try again.	Epic 返回了无法读取的响应。请重试。
+Epic sign-in expired. Select Sign in to Epic to try again.	Epic 登录已过期。请点击“登录 Epic”重试。
+Epic signed in to a different account. Reconnect this saved account.	Epic 登录了另一个账号。请重新连接这个已保存的账号。
+access_token	
+account_id	
+api.epicgames.dev	
+aud	
+basic_profile	
+client_id	
+deployment_id	
+device_code	
+dn	
+errors.com.epicgames.account.oauth.authorization_pending	
+errors.com.epicgames.account.oauth.slow_down	
+expires_in	
+grant_type	
+https://www.epicgames.com/activate	
+https://www.epicgames.com/activate?userCode=%s	
+https://www.epicgames.com/id/login?prompt=login%%20new_session&%s	
+interval	
+pfdid	
+prompt	
+redirectUrl	
+refresh_token	
+scope	
+sub	
+user_code	
+verification_uri	
+verification_uri_complete	
+# src/game.cppm
+/latest64/101	
+/latest64/111	
+0F B6 05 ? ? ? ? C3	
+0F BF 07 48 8D 15	
+40 53 48 83 EC 20 0F B6 D9 33 D2 48 8D 4C 24 38 E8 ? ? ? ? 66 83 38 00 75 0E 0F B6 CB E8 ? ? ? ? 88 1D ? ? ? ? 48 83 C4 20 5B C3	
+40 53 48 83 EC 20 E8 ? ? ? ? 48 8B 08 48 8B 91 E8 02 00 00 48 8B C8 FF D2 8B C8 E8 ? ? ? ? 8B D8 E8 ? ? ? ? 0F B6 C8 33 C0 3B CB 0F 94 C0 48 83 C4 20 5B C3	
+40 53 48 83 EC 20 F6 41 10 02	
+40 53 55 41 57 48 83 EC 70 33 ED 4C 8B FA 48 8B D9 48 85 D2	
+40 53 55 56 57 41 56 41 57 48 83 EC 78 48 8B 05 ? ? ? ? 48 33 C4 48 89 44 24 68 4C 8B B4 24 D0 00 00 00 48 8B D9 4C 8B BC 24 D8 00 00 00 B9 FF FF FF DF 41 8B E9 41 8B F0 48 8B FA E8	
+40 53 57 48 83 EC 58 48 83 B9 98 00 00 00 00 8B DA 48 8B F9	
+48 83 EC 28 48 83 3D ? ? ? ? 00 75 2F 48 8B 0D ? ? ? ? 48 85 C9 74 23 4C 8D 0D ? ? ? ? 4C 8D 05 ? ? ? ? 48 8D 15 ? ? ? ? E8 ? ? ? ? 85 C0 75 05 48 83 C4 28 C3 8B 0D ? ? ? ? 85 C9 75 1C 33 D2 48 8D 0D ? ? ? ? FF 15 ? ? ? ? 33 C9 85 C0 0F 94 C1 89 0D ? ? ? ? 8B C1 48 83 C4 28 C3	
+48 83 EC 28 E8 ? ? ? ? 48 8B 08 48 8B 91 E8 02 00 00 48 8B C8 FF D2 8B C8 E8 ? ? ? ? 0F B6 C8 48 83 C4 28 E9	
+48 83 EC 28 E8 ? ? ? ? 85 C0 74 0A B8 01 00 00 00 48 83 C4 28 C3 E8 ? ? ? ? F7 D8 1B C0 83 E0 02 48 83 C4 28 C3	
+48 89 0D ? ? ? ? C3	
+48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 41 54 41 56 41 57 48 83 EC 40 45 8B F1	
+48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 41 56 48 83 EC 40 41 8B F1 49 8B E8 4C 8B F2 E8	
+48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC 30 48 83 B9 98 00 00 00 00 41 8B E8 41 8B F1 48 8B FA 48 8B D9	
+48 89 5C 24 ? 57 48 83 EC 20 48 8B 41 40 48 8D 59 38 48 8B FA 48 85 C0	
+48 89 74 24 ? 57 48 83 EC 40 48 8B F1 E8 ? ? ? ? 85 C0	
+48 89 AE A0 00 00 00	
+48 8B 05 ? ? ? ? 48 89 45 ? 48 8B 05 ? ? ? ? 48 89 45 ? 48 8B 05 ? ? ? ? 48 89 ? ?	
+48 8B 3D ? ? ? ? 48 8B DA 4C 8B C1	
+48 8B 41 40 4C 8B C9 48 85 C0 74 58 0F 1F 40 00 48 39 10 74 0A 48 8B 40 08 48 85 C0 75 F2 C3 48 8B 50 10 48 8B 48 08 48 85 D2 74 06 48 89 4A 08 EB 04 49 89 49 40 48 8B 50 08 48 8B 48 10 48 85 D2 74 11 48 89 4A 10 49 8B 49 50 48 89 48 08 49 89 41 50 C3 49 89 49 48 49 8B 49 50 48 89 48 08 49 89 41 50 C3	
+48 8B CA 41 8B D0 E9	
+48 8B D1 45 33 C9 48 8D 0D ? ? ? ? 41 B8 FF FF FF FF E9	
+48 8D 05 ? ? ? ? 33 ED 48 89 01 48 8D 79 18 48 8D 05	
+48 8D 05 ? ? ? ? C3	
+48 8D 0D ? ? ? ? E8 ? ? ? ? B9 72 98 13 00 E8 ? ? ? ? 85 C0	
+85 C0 0F 85	
+85 C0 75 35 48 8B 46 08 48 8D 4E 08	
+89 7C 24 30 44 8B C8 48 89 4C 24 28 44 8B C6 49 8B CE 48 89 5C 24 20 48 8B D5 E8	
+8B 05 ? ? ? ? 85 C0 74 0B 83 F8 03 74 06 B8 01 00 00 00 C3	
+8B 05 ? ? ? ? 85 C0 74 2A 4C 8B 05 ? ? ? ? 83 F8 01 75 06 41 80 38 00 74 18 4D 8B CF 4C 89 7C 24 20 48 8D 15 ? ? ? ? 48 8D 4D 90 E8	
+8B 05 ? ? ? ? C3	
+B8 ? ? ? ? C3	
+C7 44 24 38 00 00 00 00 48 8D 0D	
+E8 ? ? ? ? 48 8B 08 48 8B 51 78 48 8B C8 FF D2	
+E8 ? ? ? ? 48 8B 08 4C 8B 91 B0 00 00 00 48 8B C8 41 FF D2 8B F8 E8 ? ? ? ? 48 8B 08 48 8B 91 90 00 00 00 48 8B C8 FF D2 48 8B D8 E8 ? ? ? ? 48 8B 08 48 8B 91 78 02 00 00 48 8B C8 FF D2	
+GW2's native interface has changed or its executable is incomplete. Update the launcher before signing in.	激战2的原生接口已更改，或其可执行文件不完整。登录前请先更新启动器。
+OpenIdQuery	
+Portal.Token	
+assetcdn.%u.arenanetworks.com	
+assetcdn.%u.cgw2.com	
+assetcdn.101.arenanetworks.com	
+assetcdn.111.cgw2.com	
+steam_api64.dll	
+# src/ui_text.cppm
+/usr/share/fonts/OTF/NotoSansCJK-Regular.ttc	
+/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc	
+/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc	
+/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc	
+/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf	
+/usr/share/fonts/truetype/wqy/wqy-microhei.ttc	
+/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc	
+C:\\Windows	
+Fonts	
+dbo	
+diouxXeEfFgGaAcsp	
+diuo	
+eEfFgG%	
+eEfFgGaA	
+hljztL	
+msyh.ttc	
+simhei.ttf	
+simsun.ttc	
+# src/proxy_settings.hpp
+0123456789abcdefABCDEF:.	
+Choose SOCKS5, HTTP CONNECT, or HTTPS CONNECT for the proxy.	请为代理选择 SOCKS5、HTTP CONNECT 或 HTTPS CONNECT。
+Enter only the proxy hostname or IP address, without a URL or port.	请只输入代理主机名或 IP 地址，不要包含网址或端口。
+The proxy port must be between 1 and 65535.	代理端口必须在 1 到 65535 之间。
+The proxy username or saved password is invalid.	代理用户名或已保存的密码无效。
+Use a proxy password of up to 255 UTF-8 bytes without control characters.	代理密码最多 255 个 UTF-8 字节，且不能包含控制字符。
+http	
+# src/setup_paths.hpp
+Choose the Gw2-64.exe file in your Guild Wars 2 folder.	请选择激战2文件夹中的 Gw2-64.exe 文件。
+Gw2-64.exe is no longer at its saved location. Find it again or browse to it.	Gw2-64.exe 已不在保存的位置。请重新查找或浏览选择。
+Gw2.dat	
+Gw2.dat is missing beside Gw2-64.exe. Finish installing Guild Wars 2 or choose another copy.	Gw2-64.exe 旁缺少 Gw2.dat。请完成激战2的安装，或选择另一份副本。
+# src/ui_surface.cppm
+GW2	
+Launcher	启动器
+Panel	面板
+https://github.com/Dvow/gw2-multi-launcher	
+# src/data_folder.cppm
+GW2 Multi Launcher	
+# src/app_extension.cppm
+add-on	

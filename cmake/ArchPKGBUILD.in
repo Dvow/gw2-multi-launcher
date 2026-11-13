@@ -1,0 +1,27 @@
+pkgname='@GW2_LINUX_PACKAGE_NAME@'
+pkgver='@PROJECT_VERSION@'
+pkgrel=1
+pkgdesc='Compact native Guild Wars 2 account launcher'
+arch=('x86_64')
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'curl' 'openssl' 'glib2' 'libsecret' 'libglvnd' 'libx11' 'libxcursor'
+         'libxrandr' 'libxi' 'libxfixes' 'libxss' 'libxtst' @arch_extra_dependencies@)
+optdepends=('umu-launcher: run the game with Proton'
+            'mitmproxy>=12.2: per-account proxy routing'
+            'bubblewrap: isolated per-account proxy networks'
+            'iproute2: configure isolated proxy networks'
+            'python: per-account proxy supervisor'
+            'wine: run the game with Wine'
+            'gnome-keyring: store account credentials'
+            'xorg-xwayland: run on Wayland desktops'
+            'xdg-desktop-portal: file picker'
+            'zenity: fallback file picker')
+options=('!strip' '!debug')
+source=('@arch_payload_name@.tar.gz')
+sha256sums=('%PAYLOAD_SHA256%')
+
+package() {
+  cp -a "$srcdir/usr" "$pkgdir/"
+  printf 'ARCH\n' > "$pkgdir/usr/lib/$pkgname/package-format"
+  install -Dm644 "$srcdir/usr/share/doc/$pkgname/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

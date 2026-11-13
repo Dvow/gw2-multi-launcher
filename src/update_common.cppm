@@ -12,6 +12,8 @@ module;
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include "package_update.hpp"
 #endif
 
 export module update:common;
@@ -30,11 +32,13 @@ struct AppUpdate {
 
 std::array<unsigned, 3> versionParts(std::string_view text);
 bool appUpdatesEnabled();
+bool appUpdatesAlwaysOn();
 std::string_view appUpdateNotice();
 AppUpdate checkAppUpdate(std::stop_token stop);
 std::filesystem::path downloadAppUpdate(const AppUpdate &release, std::stop_token stop);
 void installAppUpdate(const AppUpdate &release, std::stop_token stop);
 void relaunchUpdatedApp();
+void relaunchApp();
 void clearParkedFiles();
 } // namespace gw2
 
@@ -61,9 +65,6 @@ void installAppUpdate(const AppUpdate &release, std::stop_token stop) {
     if (base && (std::filesystem::exists(path(base) / "unins000.exe") ||
             std::filesystem::exists(path(base) / ("Uninstall " + std::string(gw2ProductName()) + ".exe"))))
         args.push_back("/DIR=" + std::string(base));
-#else
-    std::vector<std::string> args{"pkexec", "/usr/bin/apt-get", "install", "--yes", utf8(file)};
-#endif
     std::vector<const char *> pointers;
     for (const auto &arg : args)
         pointers.push_back(arg.c_str());
@@ -72,15 +73,14 @@ void installAppUpdate(const AppUpdate &release, std::stop_token stop) {
     auto process = std::unique_ptr<SDL_Process, decltype(&SDL_DestroyProcess)>(
         SDL_CreateProcess(pointers.data(), false), SDL_DestroyProcess);
     if (!process) throw std::runtime_error("Could not start the update installer.");
-#ifndef _WIN32
-    int result{};
-    while (!SDL_WaitProcess(process.get(), false, &result)) {
-        cancelled(stop);
-        SDL_Delay(50);
-    }
-    if (result != 0)
-        throw std::runtime_error(
-            "Installation was cancelled or failed. Try again and approve the system prompt.");
+#else
+    const auto base = SDL_GetBasePath();
+    if (!base) throw std::runtime_error("Cannot locate the installed launcher.");
+    const auto args = package::installCommand(package::format(path(base)), file);
+    const auto directory = dataRoot() / "launcher-update";
+    std::filesystem::create_directories(directory);
+    cancelled(stop);
+    package::install(args, directory / "install.log");
 #endif
 }
 void removeParked(const std::filesystem::path &file) {
@@ -109,10 +109,25 @@ void clearParkedFiles() {
 }
 void relaunchUpdatedApp() {
 #ifndef _WIN32
-    const char *args[]{"/usr/bin/gw2-multi-launcher", nullptr};
-    auto process = SDL_CreateProcess(args, false);
-    if (!process) throw std::runtime_error(std::string("The update was installed. Reopen ") + gw2ProductName() + ".");
-    SDL_DestroyProcess(process);
+    try {
+        relaunchApp();
+    } catch (const std::exception &) {
+        throw std::runtime_error(std::string("The update was installed. Reopen ") + gw2ProductName() + ".");
+    }
 #endif
+}
+// Starts a new launcher after this one released its instance lock.
+void relaunchApp() {
+    const auto base = SDL_GetBasePath();
+    if (!base) throw std::runtime_error(std::string("Reopen ") + gw2ProductName() + ".");
+#ifdef _WIN32
+    const auto executable = std::string(base) + GW2_PROGRAM_FILE ".exe";
+#else
+    const auto executable = std::string(base) + GW2_PROGRAM_FILE;
+#endif
+    const char *args[]{executable.c_str(), nullptr};
+    auto process = SDL_CreateProcess(args, false);
+    if (!process) throw std::runtime_error(std::string("Reopen ") + gw2ProductName() + ".");
+    SDL_DestroyProcess(process);
 }
 } // namespace gw2

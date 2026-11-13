@@ -116,7 +116,10 @@ DWORD ReleaseInstanceMutex() {
 }
 
 namespace {
-constexpr wchar_t MessageName[] = GW2_NATIVE_CHANNEL_W L".Native.13";
+// 14: the hook claims a request before running it, and the caller withdraws one not claimed.
+// 15: the layout carries GW2's own Steam start (anchors 26-28, steamApiFile).
+constexpr wchar_t MessageName[] = GW2_NATIVE_CHANNEL_W L".Native.15";
+constexpr DWORD PacketVersion = 15;
 constexpr DWORD Magic = GW2_PACKET_MAGIC;
 
 enum Operation : DWORD {
@@ -144,7 +147,9 @@ enum Result : DWORD {
     AuthenticationError = 9,
     AgreementRequired = 10,
     LoadingDll = 11,
-    VerificationRequired = 12
+    VerificationRequired = 12,
+    Taken = 13, // The hook is running the request.
+    Withdrawn = 14 // The caller stopped waiting before the hook took it: it never runs.
 };
 
 struct DllPaths {
@@ -258,6 +263,47 @@ void __fastcall LoginChallenge(void *self, unsigned type) {
     loginObserver.error = 0;
 }
 
+// The Steam account a ticket from the launcher's Steam helper belongs to: a 4-byte length, then Steam's
+// game connect token (8-byte token, 8-byte SteamID, timestamp). Zero unless it is an
+// individual account in Steam's public universe.
+std::uint64_t TicketSteamId(const wchar_t *ticket) {
+    if (wcsnlen_s(ticket, 600) < 40) return 0;
+    std::uint64_t length{}, id{};
+    for (unsigned i = 0; i < 20; ++i) {
+        unsigned value{};
+        for (const auto c : {ticket[2 * i], ticket[2 * i + 1]}) {
+            if (c >= L'0' && c <= L'9')
+                value = value * 16 + static_cast<unsigned>(c - L'0');
+            else if (c >= L'a' && c <= L'f')
+                value = value * 16 + static_cast<unsigned>(c - L'a' + 10);
+            else
+                return 0;
+        }
+        if (i < 4) length |= std::uint64_t{value} << (8 * i);
+        if (i >= 12) id |= std::uint64_t{value} << (8 * (i - 12));
+    }
+    return length >= 16 && (id >> 52) == 0x011 ? id : 0;
+}
+// Whether the Steam app on this PC is signed in to this account: Steam keeps the signed-in
+// account's 32-bit id in its ActiveProcess key, 0 while nobody is signed in.
+bool SteamAppSignedInAs(std::uint64_t steamId) {
+    DWORD account{}, size = sizeof(account);
+    return steamId &&
+        RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam\\ActiveProcess", L"ActiveUser", RRF_RT_REG_DWORD,
+            nullptr, &account, &size) == ERROR_SUCCESS &&
+        account && account == static_cast<DWORD>(steamId);
+}
+// GW2's own Steam start: names steam_api64.dll's Gw2.dat file, then unpacks and loads that DLL
+// and calls SteamAPI_Init once. True when Steam started.
+bool StartGameSteam(std::uintptr_t setter, std::uintptr_t start, const void *file) {
+    __try {
+        reinterpret_cast<void(__fastcall *)(const void *)>(setter)(file);
+        return reinterpret_cast<int(__fastcall *)(unsigned)>(start)(1284210) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 LRESULT CALLBACK LoginWindow(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR);
 void DetachLoginObserver() {
     if (!loginObserver.context || loginObserver.thread != GetCurrentThreadId()) return;
@@ -301,6 +347,7 @@ struct NativeRequest {
         if (channelHook.original.rva && !layout.tokenLogin) return InvalidRequest;
         for (const auto &anchor : layout.anchors) {
             if (&anchor >= &layout.anchors[21] && &anchor <= &layout.anchors[23] && !layout.anchors[21].rva) continue;
+            if (&anchor >= &layout.anchors[26] && &anchor <= &layout.anchors[28] && !layout.anchors[26].rva) continue;
             if (((&anchor >= &layout.anchors[8] && &anchor <= &layout.anchors[11]) ||
                     &anchor == &layout.anchors[16]) &&
                 !layout.tokenLogin)
@@ -401,6 +448,26 @@ struct NativeRequest {
         reinterpret_cast<Subscribe>(table[16])(context, &loginObserver);
         return Completed;
     }
+    // GW2 starts Steam in its own Steam sign-in, before it asks for a ticket. Ours brings the
+    // ticket, so start it here: only then does the game register Steam's purchase approval
+    // (Steam wallet gems), Steam loads its overlay into the game, and Steam treats GW2 as
+    // running and applies its controller layout. The launcher still starts the game itself,
+    // so the account's proxy keeps working. Only for the account the Steam app on this PC is
+    // signed in to: purchases go to the Steam account linked to the game account. Without
+    // Steam the sign-in goes on as before.
+    void startSteam() {
+        if (!layout.anchors[26].rva || !layout.steamApiFile || layout.steamApiFile >= layout.imageSize ||
+            layout.imageSize - layout.steamApiFile < 6 || !SteamAppSignedInAs(TicketSteamId(request->password)))
+            return;
+        const auto file = reinterpret_cast<const void *>(base + layout.steamApiFile);
+        if (!IsReadable(file, 6)) return;
+        // What Steam sets for a game it starts; steam_api64 reads SteamAppId from this process's
+        // environment (GetEnvironmentVariableA) when Steam did not start it.
+        constexpr const wchar_t *names[]{L"SteamAppId", L"SteamGameId", L"SteamOverlayGameId"};
+        for (const auto *name : names) SetEnvironmentVariableW(name, L"1284210");
+        if (StartGameSteam(base + layout.anchors[26].rva, base + layout.anchors[27].rva, file)) return;
+        for (const auto *name : names) SetEnvironmentVariableW(name, nullptr);
+    }
     DWORD platformLogin(HWND window) {
         const auto result = subscribe(window);
         if (result != Completed) return result;
@@ -439,6 +506,7 @@ struct NativeRequest {
             return NativeFault;
         }
         loginObserver.error = loginObserver.verification = 0;
+        if (!epic) startSteam();
         reinterpret_cast<SigningIn>(base + layout.anchors[7].rva)(context);
         const auto value22 = reinterpret_cast<Number>(getters[22])(preferences);
         const auto value18 = reinterpret_cast<Text>(getters[18])(preferences);
@@ -507,14 +575,19 @@ struct NativeRequest {
         return Completed;
     }
     DWORD apply(HWND window) {
+        // Releasing the instance lock needs this process only, not GW2's login. A game
+        // WeGame's bridge signs in has no login window: its launcher object never owns the
+        // game window this is asked through (launcher +64), so validate refused it as
+        // InvalidTarget, and every WeGame launch failed 1004 at the lock (live 2026-10-28).
+        if (request->operation == EnableMultiple) {
+            request->exceptionCode = ReleaseInstanceMutex();
+            return request->exceptionCode ? NativeFault : Completed;
+        }
         const auto result = validate(window);
         if (result != Completed) return result;
         switch (request->operation) {
         case Probe:
             return Completed;
-        case EnableMultiple:
-            request->exceptionCode = ReleaseInstanceMutex();
-            return request->exceptionCode ? NativeFault : Completed;
         case Play:
         case PlayIfAuthenticated:
         case ObservePlay:
@@ -598,6 +671,24 @@ bool CurrentUserSecurity(LocalBuffer &descriptor) {
     return ConvertStringSecurityDescriptorToSecurityDescriptorW(
                sddl, SDDL_REVISION_1, &descriptor.value, nullptr) != FALSE;
 }
+// Proton can read this bridge under /run/host and still fail to map it into the
+// game. A prefix-temp copy is an ordinary executable image there.
+HMODULE HookLibrary() {
+    if (!GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) return moduleHandle;
+    static HMODULE loaded{};
+    if (loaded) return loaded;
+    wchar_t self[MAX_PATH]{};
+    const auto selfLength = GetModuleFileNameW(moduleHandle, self, MAX_PATH);
+    wchar_t directory[MAX_PATH]{};
+    const auto directoryLength = GetTempPathW(MAX_PATH, directory);
+    if (!selfLength || selfLength >= MAX_PATH || !directoryLength || directoryLength >= MAX_PATH)
+        return moduleHandle;
+    wchar_t copy[MAX_PATH]{};
+    if (swprintf_s(copy, L"%skx-native.dll", directory) < 0) return moduleHandle;
+    if (!CopyFileW(self, copy, FALSE)) return moduleHandle;
+    loaded = LoadLibraryW(copy);
+    return loaded ? loaded : moduleHandle;
+}
 } // namespace
 
 void ReceiveRequest(const CWPSTRUCT &message) {
@@ -610,8 +701,12 @@ void ReceiveRequest(const CWPSTRUCT &message) {
     View view{static_cast<Packet *>(
         MapViewOfFile(mapping.value, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(Packet)))};
     auto p = view.value;
-    if (!p || p->magic != Magic || p->version != 13 || p->nonce != nonce ||
-        p->targetPid != GetCurrentProcessId() || p->result != Pending)
+    if (!p || p->magic != Magic || p->version != PacketVersion || p->nonce != nonce ||
+        p->targetPid != GetCurrentProcessId())
+        return;
+    // Claim it, or leave it if the caller already withdrew it: a request runs exactly when
+    // its caller waits for the answer, so an unanswered one is safe to send again.
+    if (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&p->result), Taken, Pending) != Pending)
         return;
     if (p->operation == LoadDll) {
         const auto error = StartDllLoad(p);
@@ -641,11 +736,15 @@ extern "C" __declspec(dllexport) DWORD __cdecl GW2_NATIVE_EXECUTE(
     *result = Pending;
     *flags = 0;
     *exceptionCode = 0;
+    if (operation > VerifyCode) return ERROR_INVALID_PARAMETER;
+    // A window that is gone or is not the game's is not a bad request: GW2 closes its login
+    // window at Play, and the caller's handle can be seconds old (a DLL load takes about
+    // 10 s). The caller observes the windows again and asks there.
     DWORD actualPid{};
     const auto thread = GetWindowThreadProcessId(window, &actualPid);
-    if (!thread || actualPid != targetPid || operation > VerifyCode) return ERROR_INVALID_PARAMETER;
-    Handle process{operation == LoadDll ? OpenProcess(SYNCHRONIZE, FALSE, targetPid) : nullptr};
-    if (operation == LoadDll && !process.value) return GetLastError();
+    if (!thread || actualPid != targetPid) return ERROR_INVALID_WINDOW_HANDLE;
+    Handle process{OpenProcess(SYNCHRONIZE, FALSE, targetPid)};
+    if (!process.value) return GetLastError();
     if (operation == VerifyCode && (!password || !password[0] || wcsnlen_s(password, 8) >= 8))
         return ERROR_INVALID_PARAMETER;
     // LoadDll uses email/password arguments for source directory/staged file;
@@ -676,7 +775,7 @@ extern "C" __declspec(dllexport) DWORD __cdecl GW2_NATIVE_EXECUTE(
     auto p = view.value;
     *p = {};
     p->magic = Magic;
-    p->version = 13;
+    p->version = PacketVersion;
     p->targetPid = targetPid;
     p->layout = *layout;
     p->nonce = nonce;
@@ -690,11 +789,19 @@ extern "C" __declspec(dllexport) DWORD __cdecl GW2_NATIVE_EXECUTE(
         wcscpy_s(p->email, email);
         wcscpy_s(p->password, password);
     }
-    Hook hook{SetWindowsHookExW(WH_CALLWNDPROC, GW2_NATIVE_HOOK, moduleHandle, thread)};
+    auto library = HookLibrary();
+    auto procedure = reinterpret_cast<HOOKPROC>(GetProcAddress(library, "GW2_NATIVE_HOOK"));
+    if (!procedure) {
+        library = moduleHandle;
+        procedure = GW2_NATIVE_HOOK;
+    }
+    Hook hook{SetWindowsHookExW(WH_CALLWNDPROC, procedure, library, thread)};
     DWORD error{};
-    if (!hook.value)
+    if (!hook.value) {
         error = GetLastError();
-    else {
+        // Its thread ended with the window since the check above.
+        if (!IsWindow(window)) error = ERROR_INVALID_WINDOW_HANDLE;
+    } else {
         DWORD_PTR ignored{};
         SetLastError(ERROR_SUCCESS);
         if (!SendMessageTimeoutW(window, RegisterWindowMessageW(MessageName), GetCurrentProcessId(),
@@ -705,28 +812,31 @@ extern "C" __declspec(dllexport) DWORD __cdecl GW2_NATIVE_EXECUTE(
     }
     // The hook maps its own view. On timeout it retains its mapping independently
     // until the callback returns. Never unmap or free target-process pointers here.
-    if (!error && operation == LoadDll) {
-        const auto deadline = GetTickCount64() + 10000;
-        while (InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&p->result), 0, 0) == LoadingDll) {
-            // A killed game cannot finish the loader's shared-memory reply.
-            // Observe exit instead of leaving its account busy until timeout.
-            const auto wait = WaitForSingleObject(process.value, 10);
-            if (wait != WAIT_TIMEOUT) {
-                error = wait == WAIT_OBJECT_0 ? ERROR_PROCESS_ABORTED : GetLastError();
-                break;
-            }
-            if (GetTickCount64() >= deadline) {
-                error = ERROR_TIMEOUT;
-                break;
-            }
-        }
+    // A request the hook has not taken is withdrawn: ERROR_TIMEOUT, or
+    // ERROR_INVALID_WINDOW_HANDLE when the window closed during the send, then means it never
+    // ran, and the caller asks again later. One taken just as the wait ended is waited out.
+    const bool unanswered = error == ERROR_TIMEOUT || error == ERROR_INVALID_WINDOW_HANDLE;
+    const bool withdrawn = unanswered &&
+        InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&p->result), Withdrawn, Pending) == Pending;
+    if (unanswered && !withdrawn) error = ERROR_SUCCESS;
+    // Then wait for the answer, and for a DLL load for the load itself, however long a scan of
+    // the fresh copy or a busy game makes it: it goes on either way, and a deadline here
+    // reported a failure for a load that then succeeded, leaving that game unsigned. The game
+    // exiting (Kill) ends the wait; a killed game cannot finish the shared-memory reply.
+    const auto running = [&] {
+        const auto state = InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(&p->result), 0, 0);
+        return state == Taken || state == LoadingDll;
+    };
+    while (!error && running()) {
+        const auto wait = WaitForSingleObject(process.value, 10);
+        if (wait != WAIT_TIMEOUT) error = wait == WAIT_OBJECT_0 ? ERROR_PROCESS_ABORTED : GetLastError();
     }
     if (!error) {
         *result = p->result;
         *flags = p->flags;
         *exceptionCode = p->exceptionCode;
     }
-    if (!error || !hook.value) {
+    if (!error || !hook.value || withdrawn) {
         SecureZeroMemory(p->email, sizeof(p->email));
         SecureZeroMemory(p->password, sizeof(p->password));
     }

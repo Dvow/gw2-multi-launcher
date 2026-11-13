@@ -9,6 +9,7 @@ module;
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,13 +17,25 @@ module;
 #include <initializer_list>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
 #include "font.hpp"
+#ifdef _WIN32
+#include "windows_setup.hpp"
+#else
+#include "linux_setup.hpp"
+#endif
+#include <chrono>
+#include <future>
+#include <optional>
+#include "launch_recovery.hpp"
 
 export module ui;
 import platform;
@@ -31,15 +44,25 @@ import data_folder;
 import accounts;
 import app;
 import update;
+import ui_text;
 
 namespace gw2::presentation {
+#ifdef _WIN32
+namespace launcher_setup = windows_setup;
+#else
+namespace launcher_setup = linux_setup;
+#endif
 const surface::Palette &ink() { return surface::active().palette; }
-constexpr float iconSize = 28, iconSpacing = 4, headerHeight = 42;
+constexpr float iconSize = 28, iconSpacing = 4, headerHeight = 42, launcherMinWidth = 240;
+int headerButtons() {
+    return surface::active().panel.draw ? 4 : 3;
+}
 ImRect headerButton(int index, float width, float scale) {
     const auto margin = ImGui::GetStyle().WindowPadding.x;
     const auto button = iconSize * scale;
     const auto gap = iconSpacing * scale;
-    const ImVec2 pos{width - margin - 3 * button - 2 * gap + index * (button + gap),
+    const auto count = static_cast<float>(headerButtons());
+    const ImVec2 pos{width - margin - count * button - (count - 1) * gap + index * (button + gap),
         (headerHeight - iconSize) * scale / 2};
     return {pos, {pos.x + button, pos.y + button}};
 }
@@ -53,6 +76,17 @@ void mutedText(const char *text) {
     ImGui::TextUnformatted(text);
     ImGui::PopStyleColor();
 }
+void note(const std::string &text, ImVec4 color = ink().muted) {
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+    ImGui::TextWrapped("%s", text.c_str());
+    ImGui::PopStyleColor();
+}
+void heading(const char *text) {
+    ImGui::PushFont(nullptr, 20);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(text);
+    ImGui::PopFont();
+}
 void centerButtons(std::initializer_list<const char *> labels) {
     const auto pad = ImGui::GetStyle().FramePadding.x * 2;
     float row{};
@@ -62,17 +96,14 @@ void centerButtons(std::initializer_list<const char *> labels) {
     }
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (ImGui::GetContentRegionAvail().x - row) * 0.5f));
 }
-void centeredText(const char *text, bool muted = false) {
+void centeredText(const char *text) {
     const auto avail = ImGui::GetContentRegionAvail().x;
     const auto width = ImGui::CalcTextSize(text).x;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail - width) * 0.5f));
-    if (muted)
-        mutedText(text);
-    else
-        ImGui::TextUnformatted(text);
+    ImGui::TextUnformatted(text);
 }
 void help(const char *text) {
-    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_NoSharedDelay |
+    if (!*text || !ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_NoSharedDelay |
             ImGuiHoveredFlags_AllowWhenDisabled))
         return;
     ImGui::BeginTooltip();
@@ -107,7 +138,8 @@ enum class Icon {
     remove,
     folder,
     password,
-    qr
+    qr,
+    files
 };
 void drawIcon(Icon icon, ImVec2 origin, ImU32 color, float scale) {
     auto draw = ImGui::GetWindowDrawList();
@@ -189,6 +221,15 @@ void drawIcon(Icon icon, ImVec2 origin, ImU32 color, float scale) {
             draw->AddRect(point(p), point({p.x + 5, p.y + 5}), color, 0, 0, 1.5f * scale);
         stroke({{10, 10}, {10, 15}, {15, 15}, {15, 10}, {13, 10}});
         break;
+    case Icon::files: {
+        // Cloud: right bump, top bump, left bump, then the flat base.
+        constexpr float pi = 3.14159265f;
+        draw->PathArcTo(point({12, 10}), 3 * scale, pi / 2, -pi / 2);
+        draw->PathArcTo(point({8, 7}), 4 * scale, 0, -pi);
+        draw->PathArcTo(point({4, 10}), 3 * scale, -pi / 2, -3 * pi / 2);
+        draw->PathStroke(color, ImDrawFlags_Closed, 1.5f * scale);
+        break;
+    }
     }
 }
 bool iconButton(Icon icon, const char *label, bool primary = false) {
@@ -203,17 +244,6 @@ bool iconButton(Icon icon, const char *label, bool primary = false) {
     drawIcon(icon, {pos.x + 6 * scale, pos.y + 6 * scale}, ImGui::GetColorU32(ImGuiCol_Text), scale);
     help(label);
     return pressed;
-}
-void pulseOutline(double since) {
-    if (since < 0) return;
-    const auto scale = ImGui::GetStyle().FontScaleDpi;
-    auto color = ink().accent;
-    color.w = 0.8f * static_cast<float>(0.5 - 0.5 * std::cos(
-        (ImGui::GetTime() - since) * 3.141592653589793));
-    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
-    ImGui::GetWindowDrawList()->AddRect({min.x + scale, min.y + scale},
-        {max.x - scale, max.y - scale}, ImGui::GetColorU32(color),
-        ImGui::GetStyle().FrameRounding, 1.25f * scale);
 }
 void clippedText(const char *text, float width) {
     const auto pos = ImGui::GetCursorScreenPos();
@@ -268,6 +298,123 @@ struct Picker {
     std::vector<std::string> values;
     std::string error;
 };
+// A game location being chosen: the Settings form's, or the home card's that first-run
+// setup and launch repair share.
+// A detected installation's executable.
+#ifdef _WIN32
+std::string detectedGame(const std::filesystem::path &game) { return utf8(game); }
+#else
+std::string detectedGame(const auto &game) { return game.game.string(); }
+#endif
+// Whether a chosen executable is there to launch; detection fills only fields that are not.
+bool usableGame(const char *game) {
+#ifdef _WIN32
+    return setup_paths::gameExecutable(path(game));
+#else
+    std::error_code error;
+    return *game && std::filesystem::is_regular_file(path(game), error);
+#endif
+}
+struct Installation {
+    // game is the global client's executable and china the Chinese one's. The home card
+    // (home) edits only the normal launch's installation in game; saving keeps each
+    // executable as its own client's (Store::settings, Action::installation).
+    std::array<char, 32761> game{}, china{}, runner{}, prefix{}, proton{};
+    bool home{};
+    std::optional<launcher_setup::Detection> found;
+    std::vector<std::string> chinaFound; // The detected executables that are the Chinese client.
+    std::future<std::pair<launcher_setup::Detection, std::vector<std::string>>> detection;
+    std::string detectionError;
+    bool detected{}; // A detection finished that the home card has not looked at yet.
+    bool settled{}; // The detection leaves no choice to make: at most one installation per client.
+    Catalog fields() const {
+        Catalog c;
+        c.gamePath = game.data();
+        if (!home) c.chinaGamePath = china.data();
+        c.runner = runner.data();
+        c.prefix = prefix.data();
+        c.proton = proton.data();
+        return c;
+    }
+    bool same(const Catalog &c) const {
+        return (home ? normalGamePath(c) == game.data()
+                     : c.gamePath == game.data() && c.chinaGamePath == china.data()) &&
+            c.runner == runner.data() && c.prefix == prefix.data() && c.proton == proton.data();
+    }
+    void load(const Catalog &c, bool homeCard) {
+        home = homeCard;
+        assign(game, home ? normalGamePath(c) : c.gamePath);
+        assign(china, home ? std::string{} : c.chinaGamePath);
+        assign(runner, c.runner);
+        assign(prefix, c.prefix);
+        assign(proton, c.proton);
+    }
+    bool isChina(const std::string &executable) const {
+        return std::ranges::find(chinaFound, executable) != chinaFound.end();
+    }
+    void detect() {
+        if (detection.valid()) return;
+        detectionError.clear();
+        detection = std::async(std::launch::async, [] {
+            auto found = launcher_setup::detect(launcher_setup::currentEnvironment());
+            std::vector<std::string> china;
+            for (const auto &entry : found.games)
+                if (const auto game = detectedGame(entry); chinaClient(game)) china.push_back(game);
+            return std::pair{std::move(found), std::move(china)};
+        });
+    }
+    // Applies a finished detection and returns whether the draft changed. A single
+    // installation of a client fills its unusable field; several need a deliberate choice.
+    // The home card takes the global client, or the Chinese one when it is the only one.
+    bool poll() {
+        if (!detection.valid() || detection.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return false;
+        try {
+            std::tie(found, chinaFound) = detection.get();
+        } catch (const std::exception &) {
+            detectionError = "Detection failed. Browse for Gw2-64.exe.";
+            return false;
+        }
+        detected = true;
+        const auto before = fields();
+        std::vector<std::string> globals, chinas;
+        for (const auto &entry : found->games) {
+            auto detectedPath = detectedGame(entry);
+            (isChina(detectedPath) ? chinas : globals).push_back(std::move(detectedPath));
+        }
+        // KongZhong's and WeGame's installations both found: WeGame's serves both account types
+        // (started directly it signs in KongZhong accounts).
+        if (chinas.size() > 1) {
+            std::vector<std::string> wegames;
+            for (const auto &chinese : chinas)
+                if (wegame(chinese)) wegames.push_back(chinese);
+            if (wegames.size() == 1) chinas = std::move(wegames);
+        }
+        settled = !found->games.empty() && globals.size() <= 1 && chinas.size() <= 1;
+        if (!home && chinas.size() == 1 && !usableGame(china.data())) assign(china, chinas.front());
+#ifdef _WIN32
+        const auto &mine = home && globals.empty() ? chinas : globals;
+        if (mine.size() == 1 && !usableGame(game.data())) assign(game, mine.front());
+#else
+        launcher_setup::Selection selection{game.data(), runner.data(), prefix.data(), proton.data()};
+        auto suggested = launcher_setup::defaults(*found, path(selection.game));
+        if (found->games.size() > 1) suggested.game.clear();
+        launcher_setup::fillMissing(selection, suggested);
+        assign(game, selection.game);
+        assign(runner, selection.runner);
+        assign(prefix, selection.prefix);
+        assign(proton, selection.proton);
+#endif
+        return !same(before);
+    }
+};
+// A file list entry's path: a DLL is only its path, a program also has a delay.
+decltype(auto) filePath(auto &file) {
+    if constexpr (requires { file.path; })
+        return (file.path);
+    else
+        return (file);
+}
 struct Form {
     enum class Page { accounts, account, settings, exit } page{};
     struct Destination {
@@ -276,8 +423,6 @@ struct Form {
     };
     std::variant<std::monostate, Destination, Command> next;
     double changedAt{-1};
-    double gamePathHintSince{-1};
-    double addAccountHintSince{-1};
     bool rowsMoving{}, scrollToNew{};
     std::vector<std::string> selected;
     std::string id, localError, notifiedUpdate;
@@ -296,14 +441,32 @@ struct Form {
     App *authApp{};
     std::array<char, 2049> args{};
     std::vector<std::string> dlls;
-    std::array<char, 32761> game{}, runner{}, prefix{}, proton{};
-    bool hide{}, showPid{}, alwaysOnTop{}, autoUpdate{}, askedAutoUpdate{}, removing{}, loading{}, edited{},
-        connected{};
-    std::uint64_t pending{};
+    std::vector<Program> programs;
+    ProxySettings proxy;
+    std::array<char, 254> proxyHost{};
+    std::array<char, 256> proxyUser{}, proxyPassword{};
+    std::array<char, 4096> mitmdump{};
+    bool clearProxyPassword{};
+    // Picker targets 1-4 are installation paths (game, prefix, Proton, Chinese client); each
+    // file list has an add target, then add+1+index replaces that entry.
+    static constexpr unsigned dllPicker = 8, programPicker = 64;
+    Installation install, setup; // Settings, and the home card's setup and repair.
+    bool hide{}, showPid{}, alwaysOnTop{}, hideGameRow{}, minimizeOnLaunch{}, autoUpdate{}, askedAutoUpdate{},
+        removing{}, loading{}, edited{}, connected{}, setupChecked{}, changing{}, scrollToSetup{};
+    std::uint64_t pending{}, launchSerial{};
     Action pendingAction{};
+    recovery::Request launchRequest;
+    recovery::Recovery recovery; // A launch stopped by the installation, until repaired or cancelled.
     std::shared_ptr<Picker> picker;
     unsigned pickerField{};
+    Installation *pickerInstall{};
+    // Side panel width is in logical pixels. The toggle applies before the next frame lays out.
+    bool panelOpen{}, togglePanel{}, panelFitted{}, panelFocused{};
+    float panelWidth{};
+    int panelAdded{}; // window pixels the open panel added; closing removes exactly these
+    std::optional<std::pair<int, int>> panelShift; // window x before and after opening it moved the window
     ~Form() {
+        wipe(proxyPassword.data(), proxyPassword.size());
         wipe(password.data(), password.size());
         wipe(verificationCode.data(), verificationCode.size());
     }
@@ -316,10 +479,7 @@ struct Form {
         if ((page == Page::settings) != (target == Page::settings)) changedAt = ImGui::GetTime();
         page = target;
     }
-    bool animating() const {
-        return rowsMoving || gamePathHintSince >= 0 || addAccountHintSince >= 0 ||
-            ImGui::GetTime() - changedAt < 0.16;
-    }
+    bool animating() const { return rowsMoving || ImGui::GetTime() - changedAt < 0.16; }
     float opacity() const {
         const auto t = static_cast<float>(std::clamp((ImGui::GetTime() - changedAt) / 0.16, 0.0, 1.0));
         return 0.35f + 0.65f * t * t * (3 - 2 * t);
@@ -332,6 +492,7 @@ struct Form {
         rowsMoving = true;
         scrollToNew = false;
         clearPassword();
+        wipe(proxyPassword.data(), proxyPassword.size());
         navigate(Page::accounts);
         removing = loading = edited = connected = false;
         id.clear();
@@ -348,21 +509,26 @@ struct Form {
         if (page == Page::settings) return;
         close();
         navigate(Page::settings);
-        assign(game, c.gamePath);
+        install.load(c, false);
+        install.detect();
         assign(args, c.arguments);
         dlls = c.dlls;
-        assign(runner, c.runner);
-        assign(prefix, c.prefix);
-        assign(proton, c.proton);
+        programs = c.programs;
+        assign(mitmdump, c.mitmdump);
         hide = c.hideLogin;
         showPid = c.showPid;
         alwaysOnTop = c.alwaysOnTop;
+        hideGameRow = c.hideGameRow;
+        minimizeOnLaunch = c.minimizeOnLaunch;
         autoUpdate = c.autoUpdate;
     }
-    void openAccount(const Account *account, App &app) {
+    void openAccount(const Account *account, App &app, const Catalog &catalog) {
         close();
         authApp = &app;
-        provider = account ? account->provider : Provider::arenaNet;
+        // A new account starts as one of its installation's: KongZhong with only the Chinese client.
+        provider = account ? account->provider
+            : catalog.gamePath.empty() && !catalog.chinaGamePath.empty() ? Provider::kongZhong
+                                                                         : Provider::arenaNet;
         steamPassword = false;
         guard.fill(0);
         navigate(Page::account);
@@ -371,6 +537,11 @@ struct Form {
         assign(email, "");
         assign(args, account ? account->arguments : "");
         dlls = account ? account->dlls : std::vector<std::string>{};
+        programs = account ? account->programs : std::vector<Program>{};
+        proxy = account ? account->proxy : ProxySettings{};
+        assign(proxyHost, proxy.host);
+        assign(proxyUser, proxy.username);
+        clearProxyPassword = false;
         if (account) {
             id = account->id;
             loading = true;
@@ -400,26 +571,58 @@ struct Form {
                 displayNameId.clear();
             }
         }
-        std::erase_if(selected, [&](const auto &id) {
-            return std::ranges::find(snapshot.catalog.accounts, id, &Account::id) ==
-                snapshot.catalog.accounts.end();
-        });
+        const auto exists = [&](const std::string &id) {
+            return std::ranges::find(snapshot.catalog.accounts, id, &Account::id) != snapshot.catalog.accounts.end();
+        };
+        std::erase_if(selected, [&](const auto &id) { return !exists(id); });
+        // A launch stopped by the installation opens repair beside it, keeping its request.
+        if (launchSerial && snapshot.completed >= launchSerial) {
+            if (snapshot.error.selectGame) {
+                recovery.stop(std::move(launchRequest));
+                setup.load(snapshot.catalog, true);
+                setup.detect();
+                scrollToSetup = true;
+            }
+            launchSerial = 0;
+        }
         if (!pending || snapshot.completed < pending) return;
-        pending = 0;
+        const auto done = std::exchange(pending, 0);
         loading = false;
+        if (pendingAction == Action::installation) {
+            changing &= !snapshot.error.message.empty();
+            const bool stopped = recovery.open();
+            resume(stopped, recovery.finished(done, !snapshot.error.message.empty(), exists));
+        }
         if (!snapshot.error.message.empty()) {
             next = std::monostate{};
-            if (pendingAction == Action::save || pendingAction == Action::settings)
+            if (pendingAction == Action::save || pendingAction == Action::settings ||
+                pendingAction == Action::installation)
                 localError = "Changes were not saved. " + snapshot.error.message;
             return;
         }
         if (pendingAction == Action::edit && snapshot.editId == id) assign(email, snapshot.editEmail);
+        // Saving keeps each executable as its own client's: show where each one went.
+        if (pendingAction == Action::settings && page == Page::settings) {
+            assign(install.game, snapshot.catalog.gamePath);
+            assign(install.china, snapshot.catalog.chinaGamePath);
+        }
         if (pendingAction == Action::save) {
             clearPassword();
+            wipe(proxyPassword.data(), proxyPassword.size());
+            clearProxyPassword = false;
             const auto saved = std::ranges::find(snapshot.catalog.accounts, id, &Account::id);
             if (saved != snapshot.catalog.accounts.end()) assign(label, saved->label);
         }
         if ((pendingAction == Action::save && id.empty()) || pendingAction == Action::remove) close();
+    }
+    // Resubmits a repaired launch exactly as it was requested. A stopped launch that ended
+    // without a request named a removed account, so nothing launches.
+    void resume(bool stopped, std::optional<recovery::Request> request) {
+        if (request)
+            next = Command{.action = request->ids.empty() ? Action::launchGame : Action::launch,
+                .ids = std::move(request->ids)};
+        else if (stopped && !recovery.open())
+            localError = "An account in this launch was removed, so nothing was launched.";
     }
     bool isSelected(const std::string &account) const {
         return std::ranges::find(selected, account) != selected.end();
@@ -442,16 +645,21 @@ struct Form {
         if (page == Page::settings) {
             c.action = Action::settings;
             c.settings = catalog;
-            c.settings.gamePath = game.data();
+            c.settings.gamePath = install.game.data();
+            c.settings.chinaGamePath = install.china.data();
             c.settings.arguments = args.data();
             c.settings.dlls = dlls;
+            c.settings.programs = programs;
+            c.settings.mitmdump = mitmdump.data();
             c.settings.hideLogin = hide;
             c.settings.showPid = showPid;
             c.settings.alwaysOnTop = alwaysOnTop;
+            c.settings.hideGameRow = hideGameRow;
+            c.settings.minimizeOnLaunch = minimizeOnLaunch;
             c.settings.autoUpdate = autoUpdate;
-            c.settings.runner = runner.data();
-            c.settings.prefix = prefix.data();
-            c.settings.proton = proton.data();
+            c.settings.runner = install.runner.data();
+            c.settings.prefix = install.prefix.data();
+            c.settings.proton = install.proton.data();
         } else {
             c.action = Action::save;
             c.id = id;
@@ -459,7 +667,13 @@ struct Form {
             c.email = email.data();
             c.arguments = args.data();
             c.dlls = dlls;
+            c.programs = programs;
             c.provider = provider;
+            c.proxy = proxy;
+            c.proxy.host = proxyHost.data();
+            c.proxy.username = proxyUser.data();
+            c.clearProxyPassword = clearProxyPassword;
+            c.proxyPassword.bytes.assign(proxyPassword.data(), proxyPassword.data() + std::strlen(proxyPassword.data()));
             if (password[0]) c.password = utf16(password.data());
         }
         submit(app, std::move(c));
@@ -470,17 +684,26 @@ struct Form {
         if (state.auth.busy) return false;
         const auto account = std::ranges::find(state.catalog.accounts, id, &Account::id);
         if (account != state.catalog.accounts.end() && account->provider == provider) return true;
-        if (provider == Provider::arenaNet) return email[0] && password[0];
+        if (provider == Provider::wegame) return true; // Nothing to sign in to here.
+        // Switching between Anet and KongZhong keeps the saved password.
+        if (passwordLogin(provider))
+            return email[0] && (password[0] || (account != state.catalog.accounts.end() &&
+                passwordLogin(account->provider)));
         return state.auth.connected && state.auth.id == id && state.auth.provider == provider;
     }
     void finish(App &app, const Snapshot &state, bool &open) {
         if (auto command = std::get_if<Command>(&next); command &&
             (command->action == Action::close || command->action == Action::closeAll ||
-                command->action == Action::cancelSetup || command->action == Action::launch)) {
+                command->action == Action::cancelSetup || command->action == Action::launch ||
+                command->action == Action::launchGame)) {
             // Process termination must not wait for saving an unrelated form.
             auto intent = std::move(*command);
             next = std::monostate{};
-            app.submit(std::move(intent));
+            // Remember a launch until it is accepted, so an installation problem can resume it.
+            const bool launching = intent.action == Action::launch || intent.action == Action::launchGame;
+            if (launching) launchRequest = {intent.ids};
+            const auto serial = app.submit(std::move(intent));
+            if (launching) launchSerial = serial;
             return;
         }
         if (pending || picker) return;
@@ -509,15 +732,17 @@ struct Form {
         if (destination->page == Page::account) {
             const auto account = std::ranges::find(state.catalog.accounts, destination->id, &Account::id);
             if (!destination->id.empty() && account == state.catalog.accounts.end()) return;
-            openAccount(destination->id.empty() ? nullptr : &*account, app);
+            openAccount(destination->id.empty() ? nullptr : &*account, app, state.catalog);
             return;
         }
         close();
         if (destination->page == Page::exit) open = false;
     }
-    void choose(SDL_Window *window, unsigned target, bool folder, const char *initial) {
+    void choose(SDL_Window *window, unsigned target, bool folder, const char *initial,
+        Installation *draft = nullptr) {
         picker = std::make_shared<Picker>();
         pickerField = target;
+        pickerInstall = draft;
         auto data = new std::shared_ptr<Picker>(picker);
         auto callback = +[](void *opaque, const char *const *files, int) {
             std::unique_ptr<std::shared_ptr<Picker>> owner(static_cast<std::shared_ptr<Picker> *>(opaque));
@@ -532,9 +757,12 @@ struct Form {
         };
         if (folder)
             SDL_ShowOpenFolderDialog(callback, data, window, initial, false);
-        else if (target >= 4) {
+        else if (target >= programPicker) {
+            static constexpr SDL_DialogFileFilter filter{"Programs", "exe;EXE"};
+            SDL_ShowOpenFileDialog(callback, data, window, &filter, 1, initial, target == programPicker);
+        } else if (target >= dllPicker) {
             static constexpr SDL_DialogFileFilter filter{"DLL files", "dll;DLL"};
-            SDL_ShowOpenFileDialog(callback, data, window, &filter, 1, initial, target == 4);
+            SDL_ShowOpenFileDialog(callback, data, window, &filter, 1, initial, target == dllPicker);
         } else
             SDL_ShowOpenFileDialog(callback, data, window, nullptr, 0, initial, false);
     }
@@ -546,20 +774,32 @@ struct Form {
             localError = picker->error;
             if (!picker->values.empty()) {
                 try {
-                    if (pickerField >= 4) {
-                        auto nextDlls = dlls;
-                        if (pickerField >= 5)
-                            nextDlls.at(pickerField - 5) = picker->values.front();
+                    // A replaced program keeps its delay; added ones start without one.
+                    const auto pick = [&](auto &files, unsigned add, auto validate) {
+                        auto chosen = files;
+                        if (pickerField > add)
+                            filePath(chosen.at(pickerField - add - 1)) = picker->values.front();
                         else
                             for (const auto &file : picker->values)
-                                if (std::ranges::find(nextDlls, file) == nextDlls.end())
-                                    nextDlls.push_back(file);
-                        validateDlls(nextDlls);
-                        dlls = std::move(nextDlls);
-                    } else
-                        assign(pickerField == 1 ? game : pickerField == 2 ? prefix : proton,
+                                if (std::ranges::none_of(chosen, [&](const auto &f) { return filePath(f) == file; }))
+                                    chosen.push_back({file});
+                        validate(chosen);
+                        files = std::move(chosen);
+                    };
+                    if (pickerField >= programPicker)
+                        pick(programs, programPicker, validatePrograms);
+                    else if (pickerField >= dllPicker)
+                        pick(dlls, dllPicker, validateDlls);
+                    else {
+                        auto &draft = *pickerInstall;
+                        assign(pickerField == 1 ? draft.game
+                                : pickerField == 2 ? draft.prefix
+                                : pickerField == 3 ? draft.proton
+                                                   : draft.china,
                             picker->values.front());
-                    edited = true;
+                    }
+                    // The home card's draft is saved by its own buttons, never with these forms.
+                    edited |= pickerField >= dllPicker || pickerInstall == &install;
                 } catch (const std::exception &error) {
                     localError = error.what();
                 }
@@ -587,7 +827,7 @@ SDL_HitTestResult SDLCALL hitTest(SDL_Window *window, const SDL_Point *point, vo
     if (point->x >= w - edge) return SDL_HITTEST_RESIZE_RIGHT;
     if (point->y >= headerHeight * scale) return SDL_HITTEST_NORMAL;
     const ImVec2 position{static_cast<float>(point->x), static_cast<float>(point->y)};
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < headerButtons(); ++i)
         if (headerButton(i, static_cast<float>(w), scale).Contains(position)) return SDL_HITTEST_NORMAL;
     if (brandHitRect(scale).Contains(position)) return SDL_HITTEST_NORMAL;
     return SDL_HITTEST_DRAGGABLE;
@@ -672,55 +912,104 @@ bool rowField(const char *name, std::array<char, N> &value, float width, const c
     ImGui::PopID();
     return changed;
 }
-void dllField(Form &form, SDL_Window *window, float width, const std::vector<std::string> &inherited) {
+// A program's delay, beside its tag and styled like one. Returns true when edited.
+bool delayField(unsigned &delay, bool global) {
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    auto seconds = static_cast<int>(delay);
+    ImGui::SameLine(0, 2 * scale);
+    ImGui::BeginDisabled(global);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{5 * scale, 0});
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetStyleColorVec4(ImGuiCol_Button));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("600 s").x + 10 * scale);
+    const bool changed = ImGui::DragInt("##delay", &seconds, 0.25f, 0, static_cast<int>(maxProgramDelay), "%d s",
+        ImGuiSliderFlags_AlwaysClamp);
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
+    ImGui::EndDisabled();
+    help("Seconds to wait before starting it, after the previous program. Drag, or double-click to type.");
+    if (!changed || global) return false;
+    delay = static_cast<unsigned>(seconds);
+    return true;
+}
+// A row of file tags: inherited global files (disabled), then the form's own. Clicking
+// a tag replaces that file, × removes it. Programs also show their delay. Picker
+// targets: `add`, then add+1+index.
+template <class File>
+void fileField(Form &form, SDL_Window *window, float width, const char *name, const char *tip,
+    std::vector<File> &files, const std::vector<File> &inherited, unsigned add,
+    const char *empty, const char *choose) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     const auto height = ImGui::GetFrameHeight();
     const auto labelWidth = std::max(68 * scale,
         ImGui::CalcTextSize("Arguments").x + ImGui::GetStyle().ItemSpacing.x);
     const auto origin = ImGui::GetCursorScreenPos();
+    ImGui::PushID(name);
     ImGui::AlignTextToFramePadding();
-    mutedText("DLLs");
-    help("Global DLLs load first, then account DLLs. Duplicate files load once. Changes apply next launch.");
+    mutedText(name);
+    help(tip);
     ImGui::SetCursorScreenPos({origin.x + labelWidth, origin.y});
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{5 * scale, scale});
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 4 * scale);
-    ImGui::BeginChild("##dlls", {std::max(1.f, width - labelWidth - 36 * scale), height},
+    ImGui::BeginChild("##files", {std::max(1.f, width - labelWidth - 36 * scale), height},
         ImGuiChildFlags_FrameStyle, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::SetCursorPosY((height - ImGui::GetTextLineHeight()) * 0.5f);
     int removed = -1;
-    auto tags = [&](const std::vector<std::string> &files, bool global) {
+    auto tags = [&](auto &list, bool global) {
         ImGui::PushID(global);
-        for (std::size_t i = 0; i < files.size(); ++i) {
+        for (std::size_t i = 0; i < list.size(); ++i) {
             ImGui::PushID(static_cast<int>(i));
             if (i || (!global && !inherited.empty())) ImGui::SameLine();
-            const auto name = utf8(path(files[i]).filename());
+            const auto &full = filePath(list[i]);
+            const auto file = utf8(path(full).filename());
             ImGui::BeginDisabled(global);
-            if (ImGui::SmallButton(name.c_str()))
-                form.choose(window, static_cast<unsigned>(i + 5), false, files[i].c_str());
+            if (ImGui::SmallButton(file.c_str()))
+                form.choose(window, add + 1 + static_cast<unsigned>(i), false, full.c_str());
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s%s", global ? "Global: " : "Replace: ", files[i].c_str());
+                ImGui::SetTooltip("%s%s", global ? "Global: " : "Replace: ", full.c_str());
+            if constexpr (std::is_same_v<File, Program>) {
+                auto delay = list[i].delay;
+                if (delayField(delay, global)) {
+                    files[i].delay = delay;
+                    form.edited = true;
+                }
+            }
             if (!global) {
                 ImGui::SameLine(0, 2 * scale);
                 if (ImGui::SmallButton("×")) removed = static_cast<int>(i);
-                help("Remove DLL");
+                help("Remove");
             }
             ImGui::PopID();
         }
         ImGui::PopID();
     };
     tags(inherited, true);
-    tags(form.dlls, false);
-    if (inherited.empty() && form.dlls.empty()) mutedText("Add DLLs…");
+    tags(files, false);
+    if (inherited.empty() && files.empty()) mutedText(empty);
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
     if (removed >= 0) {
-        form.dlls.erase(form.dlls.begin() + removed);
+        files.erase(files.begin() + removed);
         form.edited = true;
     }
     ImGui::SameLine();
-    if (iconButton(Icon::folder, "Choose DLL files"))
-        form.choose(window, 4, false, form.dlls.empty() ? nullptr : form.dlls.back().c_str());
+    if (iconButton(Icon::folder, choose))
+        form.choose(window, add, false, files.empty() ? nullptr : filePath(files.back()).c_str());
+    ImGui::PopID();
+}
+void dllField(Form &form, SDL_Window *window, float width, const std::vector<std::string> &inherited) {
+    fileField(form, window, width, "DLLs",
+        "Global DLLs load first, then account DLLs. Duplicate files load once. Changes apply next launch.", form.dlls,
+        inherited, Form::dllPicker, "Add DLLs…", "Choose DLL files");
+}
+void programField(Form &form, SDL_Window *window, float width, const std::vector<Program> &inherited) {
+    fileField(form, window, width, "Programs",
+        "Started when you launch a game, unless already running, e.g. Blish HUD. Global programs start with "
+        "every launch, then the account's own. Each waits its delay in seconds after the previous one. "
+        "They keep running when the launcher closes and get the launcher's rights, the same as the game.",
+        form.programs, inherited, Form::programPicker, "Add programs…", "Choose programs");
 }
 void qrCode(std::string_view bits, float width) {
     const int count = static_cast<int>(std::sqrt(bits.size()));
@@ -854,36 +1143,117 @@ void removeAccount(Form &form) {
 void accountFields(const Account *account, Form &form, const Snapshot &state, float width,
     SDL_Window *window) {
     form.edited |= rowField("Nickname", form.label, width, "Optional");
-    const char *providers[]{"Anet", "Steam", "Epic"};
-    float labels{};
-    for (auto provider : providers)
-        labels += ImGui::CalcTextSize(provider).x;
-    const auto padding = (width - labels - ImGui::GetStyle().ItemSpacing.x * 2) / 3;
+    // One row of buttons per line, sharing the width: the global platforms, then the China client's.
+    const auto providerRow = [&](std::initializer_list<std::pair<Provider, const char *>> choices) {
+        float labels{};
+        for (const auto &choice : choices)
+            labels += ImGui::CalcTextSize(choice.second).x;
+        const auto count = static_cast<float>(choices.size());
+        const auto padding = (width - labels - ImGui::GetStyle().ItemSpacing.x * (count - 1)) / count;
+        bool first = true;
+        for (const auto &[provider, name] : choices) {
+            if (!std::exchange(first, false)) ImGui::SameLine();
+            if (!button(name, ImGui::CalcTextSize(name).x + padding,
+                    form.provider == provider ? ink().primary : ImVec4{}) ||
+                form.provider == provider)
+                continue;
+            form.request({.action = Action::cancelConnect});
+            // Anet and KongZhong logins are alike: switching between them keeps what was typed.
+            if (!passwordLogin(form.provider) || !passwordLogin(provider)) {
+                form.email.fill(0);
+                form.clearPassword();
+            }
+            if (provider == Provider::wegame) form.proxy.enabled = false;
+            form.provider = provider;
+            form.edited = true;
+        }
+    };
+    // Each installation offers its own accounts: Anet, Steam and Epic for the global client,
+    // WeGame and KongZhong for the Chinese one; both, or none chosen yet, offer all. An
+    // account keeps its own type's row.
+    const auto &catalog = state.catalog;
+    const bool anyGame = !catalog.gamePath.empty() || !catalog.chinaGamePath.empty();
+    const bool globalRow = !anyGame || !catalog.gamePath.empty() || !chinaProvider(form.provider);
+    const bool chinaRow = !anyGame || !catalog.chinaGamePath.empty() || chinaProvider(form.provider);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
         ImVec2{4 * ImGui::GetStyle().FontScaleDpi, ImGui::GetStyle().FramePadding.y});
-    for (int i = 0; i < 3; ++i) {
-        if (i) ImGui::SameLine();
-        if (!button(providers[i], ImGui::CalcTextSize(providers[i]).x + padding,
-                static_cast<int>(form.provider) == i ? ink().primary : ImVec4{}) ||
-            static_cast<int>(form.provider) == i)
-            continue;
-        form.request({.action = Action::cancelConnect});
-        form.provider = static_cast<Provider>(i);
-        form.edited = true;
-        form.email.fill(0);
-        form.clearPassword();
-    }
+    if (globalRow) providerRow({{Provider::arenaNet, "Anet"}, {Provider::steam, "Steam"}, {Provider::epic, "Epic"}});
+    if (chinaRow) providerRow({{Provider::wegame, "WeGame"}, {Provider::kongZhong, "KongZhong"}});
     ImGui::PopStyleVar();
-    if (form.provider == Provider::arenaNet) {
-        form.edited |= rowField("Email", form.email, width, form.loading ? "Opening…" : "Anet email");
+    const bool wegameAccount = form.provider == Provider::wegame;
+    if (passwordLogin(form.provider)) {
+        const bool kongZhong = form.provider == Provider::kongZhong;
+        form.edited |= rowField(kongZhong ? "Account" : "Email", form.email, width,
+            form.loading ? "Opening…" : kongZhong ? "KongZhong account" : "Anet email");
         form.edited |= rowField("Password", form.password, width, form.id.empty() ? "Password" : "Keep saved",
             ImGuiInputTextFlags_Password | ImGuiInputTextFlags_NoUndoRedo);
+        if (kongZhong) help("For the China client. Signs in on its KongZhong login.");
+    } else if (wegameAccount) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
+        ImGui::TextWrapped("Signs in through WeGame. Keep WeGame open.");
+        ImGui::PopTextWrapPos();
     } else {
         platformFields(form, state.auth, width);
     }
-    form.edited |= rowField("Arguments", form.args, width, "e.g. -windowed -loadmapinfo");
-    help("Global arguments apply unless overridden here.");
+    // WeGame writes the game's command line and starts it, so neither applies there.
+    if (!wegameAccount) {
+        form.edited |= rowField("Arguments", form.args, width, "e.g. -windowed -loadmapinfo");
+        help("Global arguments apply unless overridden here.");
+        form.edited |= ImGui::Checkbox("Use a proxy for this account", &form.proxy.enabled);
+        help("Each account can use a different proxy. Changes apply on its next launch. Requires mitmproxy.");
+    }
+    if (form.proxy.enabled && !wegameAccount) {
+        ImGui::PushID("account-proxy");
+        int protocol = form.proxy.protocol == "http" ? 1 : form.proxy.protocol == "https" ? 2 : 0;
+        ImGui::SetNextItemWidth(width);
+        if (ImGui::Combo("##proxy-type", &protocol, "SOCKS5\0HTTP CONNECT\0HTTPS CONNECT\0")) {
+            form.proxy.protocol = protocol == 1 ? "http" : protocol == 2 ? "https" : "socks5";
+            form.edited = true;
+        }
+        form.edited |= rowField("Host", form.proxyHost, width, "proxy.example.com");
+        int port = static_cast<int>(form.proxy.port);
+        const auto portOrigin = ImGui::GetCursorScreenPos();
+        const auto portLabelWidth = std::max(68 * ImGui::GetStyle().FontScaleDpi,
+            ImGui::CalcTextSize("Arguments").x + ImGui::GetStyle().ItemSpacing.x);
+        ImGui::AlignTextToFramePadding();
+        mutedText("Port");
+        ImGui::SetCursorScreenPos({portOrigin.x + portLabelWidth, portOrigin.y});
+        ImGui::SetNextItemWidth(width - portLabelWidth);
+        if (ImGui::InputInt("##port", &port, 0, 0)) {
+            form.proxy.port = static_cast<unsigned>(std::clamp(port, 0, 65536));
+            form.edited = true;
+        }
+        help("Proxy port (1–65535).");
+        form.edited |= rowField("Username", form.proxyUser, width, "Optional");
+        const bool savedPassword = account && !account->proxy.protectedPassword.empty();
+        if (rowField("Password", form.proxyPassword, width, savedPassword ? "Keep saved" : "Optional",
+                ImGuiInputTextFlags_Password | ImGuiInputTextFlags_NoUndoRedo)) {
+            form.edited = true;
+            if (form.proxyPassword[0]) form.clearProxyPassword = false;
+        }
+        if (savedPassword && !form.proxyPassword[0])
+            form.edited |= ImGui::Checkbox("Remove saved proxy password", &form.clearProxyPassword);
+        if (form.proxyPassword[0])
+            ImGui::TextWrapped("New password will be saved.");
+        else if (form.clearProxyPassword)
+            ImGui::TextWrapped("Saved password will be removed.");
+        else if (savedPassword)
+            ImGui::TextWrapped(form.proxyUser[0] ? "Password saved. Leave blank to keep it."
+                                               : "Password saved. Enter a username to use it.");
+        else if (form.proxyUser[0])
+            ImGui::TextWrapped("No proxy password saved.");
+        ImGui::TextWrapped("TCP uses this proxy without decrypting game traffic. SOCKS5 also supports UDP; HTTP proxies block UDP.");
+#ifdef _WIN32
+        ImGui::TextWrapped("Windows DNS and other applications use their existing connection.");
+#else
+        ImGui::TextWrapped("Wine and its child processes use an isolated connection, including DNS. The first launch copies your Wine prefix for this account. Requires mitmproxy, bubblewrap and iproute2.");
+#endif
+        ImGui::PopID();
+    }
     dllField(form, window, width, state.catalog.dlls);
+#ifdef _WIN32
+    programField(form, window, width, state.catalog.programs);
+#endif
     if (account && form.removing) {
         removeAccount(form);
         return;
@@ -892,6 +1262,7 @@ void accountFields(const Account *account, Form &form, const Snapshot &state, fl
     form.removing = iconButton(Icon::remove, "Remove account");
 }
 
+constexpr ImVec4 rowColor{20 / 255.f, 24 / 255.f, 29 / 255.f, 1};
 struct AccountDrag {
     std::array<char, 37> id{};
     float grabY{};
@@ -915,6 +1286,25 @@ AccountLayout accountLayout(const Account *account, const Form &form, const Snap
         storage->GetFloat(ImGui::GetID("height")) * reveal * reveal * (3 - 2 * reveal);
     ImGui::PopID();
     return {session, expanded, reveal, height};
+}
+// "Last played 3 h ago": the largest whole unit since `played` (Unix seconds), and in `date` its
+// local date and time for the hover.
+void playedText(std::int64_t played, std::span<char> text, std::span<char> date) {
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto ago = static_cast<long long>(std::max<std::int64_t>(now - played, 0));
+    if (ago < 60)
+        std::snprintf(text.data(), text.size(), "Last played %lld s ago", ago);
+    else if (ago < 3600)
+        std::snprintf(text.data(), text.size(), "Last played %lld min ago", ago / 60);
+    else if (ago < 86400)
+        std::snprintf(text.data(), text.size(), "Last played %lld h ago", ago / 3600);
+    else
+        std::snprintf(text.data(), text.size(), "Last played %lld d ago", ago / 86400);
+    SDL_DateTime local{};
+    if (SDL_TimeToDateTime(static_cast<SDL_Time>(played) * SDL_NS_PER_SECOND, &local, true))
+        std::snprintf(date.data(), date.size(), "%04d-%02d-%02d %02d:%02d", local.year, local.month, local.day,
+            local.hour, local.minute);
 }
 void accountRow(const Account *account, App &app, Form &form, const Snapshot &state,
     SDL_Window *nativeWindow, const AccountLayout &layout, bool floating = false) {
@@ -940,7 +1330,7 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
         return;
     }
     const bool selected = account && form.isSelected(id);
-    const ImVec4 idle{20 / 255.f, 24 / 255.f, 29 / 255.f, 1};
+    const auto idle = rowColor;
     auto draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(row, {row.x + width, row.y + total},
         ImGui::GetColorU32(selected ? ImGui::GetStyleColorVec4(ImGuiCol_Header) : idle), 7 * scale);
@@ -964,15 +1354,22 @@ void accountRow(const Account *account, App &app, Form &form, const Snapshot &st
     const bool thisLaunch = queued || session.blocking();
     const bool error = session.state == 6 ||
         (!session.active && session.status != "Ready" && session.status != "Client exited");
+    // An account whose game is closed tells when it last closed, the date and time on hover.
+    const auto played = account && !session.active && !queued && !error ? state.lastPlayed(id) : 0;
+    std::array<char, 64> playedLine{};
+    std::array<char, 32> playedDate{};
+    if (played) playedText(played, playedLine, playedDate);
     const auto status = !account ? "Choose how you sign in"
         : queued                 ? "Queued"
         : error                  ? "Needs attention"
+        : played                 ? playedLine.data()
                                  : session.status.c_str();
     const auto statusWidth = std::min(ImGui::CalcTextSize(status).x, textWidth - pidWidth);
     ImGui::PushStyleColor(ImGuiCol_Text, error ? ink().error : session.active ? ink().accent : ink().muted);
     clippedText(status, statusWidth);
     ImGui::PopStyleColor();
     if (error) help(session.status.c_str());
+    if (played) help(playedDate.data());
     if (pidWidth) {
         ImGui::SetCursorScreenPos({pos.x + statusWidth, statusY});
         mutedText(pid);
@@ -1142,6 +1539,8 @@ void accountList(App &app, Form &form, const Snapshot &state, SDL_Window *native
 }
 
 void shortcuts(Form &form, bool busy, bool settingsLocked) {
+    // Keys typed in the side panel or its dialogs belong to the panel.
+    if (form.panelFocused) return;
     if (!busy && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N)) form.go(Form::Page::account);
     if (!settingsLocked && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Comma)) form.go(Form::Page::settings);
     if (form.page != Form::Page::accounts && ImGui::IsKeyPressed(ImGuiKey_Escape))
@@ -1282,7 +1681,17 @@ void header(Form &form, SDL_Window *window, bool settingsLocked, bool updateAvai
     ImGui::SameLine();
     ImGui::SetCursorPosY(textY);
     mutedText(surface::active().brandRest);
-    ImGui::SetCursorPos(headerButton(0, width, scale).Min);
+    const int first = headerButtons() - 3;
+    if (first) {
+        ImGui::SetCursorPos(headerButton(0, width, scale).Min);
+        if (iconButton(Icon::files, surface::active().panel.label)) form.togglePanel = true;
+        if (form.panelOpen) {
+            const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRect({min.x + scale, min.y + scale}, {max.x - scale, max.y - scale},
+                ImGui::GetColorU32(ink().accent), ImGui::GetStyle().FrameRounding, 0, 1.25f * scale);
+        }
+    }
+    ImGui::SetCursorPos(headerButton(first, width, scale).Min);
     ImGui::BeginDisabled(settingsLocked);
     if (iconButton(form.page != Form::Page::settings ? Icon::settings : Icon::back,
             form.page == Form::Page::settings ? "Back to accounts"
@@ -1290,7 +1699,6 @@ void header(Form &form, SDL_Window *window, bool settingsLocked, bool updateAvai
                                               : "Settings")) {
         form.go(form.page != Form::Page::settings ? Form::Page::settings : Form::Page::accounts);
     }
-    if (form.page != Form::Page::settings) pulseOutline(form.gamePathHintSince);
     if (updateAvailable && form.page != Form::Page::settings) {
         const auto edge = ImGui::GetItemRectMax();
         ImGui::GetWindowDrawList()->AddCircleFilled(
@@ -1298,9 +1706,9 @@ void header(Form &form, SDL_Window *window, bool settingsLocked, bool updateAvai
             ImGui::GetColorU32(ink().accent));
     }
     ImGui::EndDisabled();
-    ImGui::SetCursorPos(headerButton(1, width, scale).Min);
+    ImGui::SetCursorPos(headerButton(first + 1, width, scale).Min);
     if (iconButton(Icon::minimize, "Minimize")) SDL_MinimizeWindow(window);
-    ImGui::SetCursorPos(headerButton(2, width, scale).Min);
+    ImGui::SetCursorPos(headerButton(first + 2, width, scale).Min);
     if (iconButton(Icon::close, "Close launcher. Games keep running.")) form.go(Form::Page::exit);
     const auto inset = sideInset(scale);
     ImGui::SetCursorPos({inset, headerHeight * scale});
@@ -1309,9 +1717,7 @@ void header(Form &form, SDL_Window *window, bool settingsLocked, bool updateAvai
 }
 void toolbar(Form &form, const Snapshot &state, bool busy) {
     if (form.page == Form::Page::settings) {
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Settings");
-        ImGui::Spacing();
+        heading("Settings");
         return;
     }
     const auto scale = ImGui::GetStyle().FontScaleDpi;
@@ -1323,13 +1729,11 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
     const auto pos = ImGui::GetCursorScreenPos();
     const auto actionsX = ImGui::GetCursorPosX() + width - actionsWidth;
     ImGui::PushClipRect(pos, {pos.x + width - actionsWidth - 8 * scale, pos.y + 28 * scale}, true);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Accounts");
+    heading("Accounts");
     ImGui::PopClipRect();
     ImGui::SameLine(actionsX);
     ImGui::BeginDisabled(busy);
     if (iconButton(Icon::add, "Add account")) form.go(Form::Page::account);
-    pulseOutline(form.addAccountHintSince);
     ImGui::EndDisabled();
     ImGui::SameLine(0, iconSpacing * scale);
     const bool editingRequested = page == Form::Page::account && !form.id.empty() &&
@@ -1344,50 +1748,302 @@ void toolbar(Form &form, const Snapshot &state, bool busy) {
         if (iconButton(Icon::closeAll, "Kill all launched games and cancel queued launches"))
             form.request({.action = Action::closeAll});
     }
-    ImGui::Spacing();
 }
 template <std::size_t N>
-void pathField(Form &form, SDL_Window *window, const char *label, std::array<char, N> &value, unsigned target,
-    bool folder, const char *hint, double hintSince = -1) {
+bool pathField(Form &form, Installation &draft, SDL_Window *window, const char *label, std::array<char, N> &value,
+    unsigned target, bool folder, const char *hint) {
     const auto scale = ImGui::GetStyle().FontScaleDpi;
     mutedText(label);
     ImGui::PushID(label);
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 36 * scale);
-    form.edited |= ImGui::InputTextWithHint("##path", hint, value.data(), value.size());
+    const bool changed = ImGui::InputTextWithHint("##path", hint, value.data(), value.size());
+    help(value.data());
     ImGui::SameLine();
-    const bool browse = iconButton(Icon::folder, "Browse");
-    pulseOutline(hintSince);
-    if (browse) form.choose(window, target, folder, value[0] ? value.data() : nullptr);
+    if (iconButton(Icon::folder, target == 1 || target == 4 ? "Browse for Gw2-64.exe" : "Browse"))
+        form.choose(window, target, folder, value[0] ? value.data() : nullptr, &draft);
     ImGui::PopID();
+    return changed;
+}
+bool pathCombo(const char *label, const char *value) {
+    // Keep the menu above Settings; tooltips may extend beyond the native window.
+    ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+    const bool open = ImGui::BeginCombo(label, value);
+    if (!open) help(value);
+    return open;
+}
+// Where GW2 is, shared by Settings, first-run setup, and launch repair: detection, the
+// detected choices, the executable, and on Linux the Wine/Proton runner. Settings shows
+// every field; the home card shows runner fields only while they are unusable. Returns
+// whether the draft changed.
+bool installationFields(Form &form, Installation &draft, SDL_Window *window, [[maybe_unused]] bool settings) {
+    bool changed = draft.poll();
+    ImGui::BeginDisabled(draft.detection.valid());
+    if (button(draft.detection.valid() ? "Finding GW2…" : "Find again")) draft.detect();
+    help("Look for Guild Wars 2 in its usual places. A valid choice is kept.");
+    ImGui::EndDisabled();
+    const auto *found = draft.found ? &*draft.found : nullptr;
+    if (!draft.detectionError.empty())
+        note(draft.detectionError);
+    else if (found && !draft.detection.valid() && !draft.settled)
+        note(found->games.empty() ? "No installation found. Browse for Gw2-64.exe."
+                                  : "Several installations were found. Choose one.");
+    if (found && !found->games.empty() &&
+        pathCombo("Detected", draft.game[0] ? draft.game.data() : "Choose an installation")) {
+        for (const auto &game : found->games) {
+            const auto text = detectedGame(game);
+            // Settings keeps the Chinese client in its own field; the home card has one.
+            const bool chinese = settings && draft.isChina(text);
+            auto &target = chinese ? draft.china : draft.game;
+            if (ImGui::Selectable(chinese ? (text + "  (Chinese client)").c_str() : text.c_str(),
+                    text == target.data())) {
+                assign(target, text);
+#ifndef _WIN32
+                if (!chinese) assign(draft.prefix, game.prefix.string());
+#endif
+                changed = true;
+            }
+            help(text.c_str());
+        }
+        ImGui::EndCombo();
+    }
+    changed |= pathField(form, draft, window, "Game executable", draft.game, 1, false, "Full path to Gw2-64.exe");
+    if (settings) {
+        changed |= pathField(form, draft, window, "Chinese client", draft.china, 4, false,
+            "Optional: KongZhong or WeGame Gw2-64.exe");
+        help("For KongZhong and WeGame accounts.");
+    }
+#ifndef _WIN32
+    const auto choosePath = [&](const char *label, const auto &values, auto &field) {
+        if (values.empty() || !pathCombo(label, field.data())) return;
+        for (const auto &value : values) {
+            const auto text = std::filesystem::path(value).string();
+            if (ImGui::Selectable(text.c_str(), text == field.data())) {
+                assign(field, text);
+                changed = true;
+            }
+            help(text.c_str());
+        }
+        ImGui::EndCombo();
+    };
+    if (settings || linux_setup::findExecutable(draft.runner.data(), linux_setup::environment("PATH")).empty()) {
+        changed |= field("Runner", draft.runner, "wine, umu-run, or an absolute path");
+        help(draft.runner.data());
+        if (found) choosePath("Detected runners", found->runners, draft.runner);
+    }
+    if (settings || !linux_setup::prefix(draft.prefix.data())) {
+        changed |= pathField(form, draft, window, "Wine prefix", draft.prefix, 2, true, "Directory containing system.reg");
+        if (found) choosePath("Detected prefixes", found->prefixes, draft.prefix);
+    }
+    if (path(draft.runner.data()).filename() == "umu-run" && (settings || !linux_setup::proton(draft.proton.data()))) {
+        changed |= pathField(form, draft, window, "Proton directory", draft.proton, 3, true,
+            "Directory containing the proton executable");
+        if (found) choosePath("Detected Proton", found->protons, draft.proton);
+    }
+#endif
+    if (const auto problem = installationProblem(draft.fields()); !problem.empty()) note(problem);
+    if (settings && draft.game[0] && draft.china[0] && !usableGame(draft.china.data()))
+        note("The Chinese client's Gw2-64.exe is missing or incomplete.");
+    return changed;
+}
+constexpr const char *normalLaunchHelp = "Sign in through GW2. Uses your remembered login if available.";
+// The top of the home page: the normal launch and its session, first-run setup, and repair
+// beside a launch that stopped at the installation. Repair keeps that request until it
+// resumes once or is cancelled; detection alone never launches anything. With accounts,
+// GW2 is one more row in their style that expands like an account editor.
+void gameCard(App &app, Form &form, const Snapshot &state, SDL_Window *window, bool busy) {
+    auto &draft = form.setup;
+    const auto saved = installationProblem(state.catalog);
+    const bool repair = form.recovery.open();
+    const bool locked = form.pending || form.picker || !state.ready || state.updating();
+    const bool expanded = repair || !saved.empty() || form.changing;
+    const bool row = !state.catalog.accounts.empty();
+    // Exactly one usable installation is saved for the player; several need a choice.
+    if (draft.detected && !locked) {
+        draft.detected = false;
+        if (!saved.empty() && draft.settled && installationProblem(draft.fields()).empty())
+            form.submit(app, {.action = Action::installation, .settings = draft.fields()});
+    }
+    if (std::exchange(form.scrollToSetup, false)) ImGui::SetScrollHereY(0);
+    const auto *session = state.session(normalSession);
+    const bool active = session && session->active;
+    const bool queued = state.launchQueued(normalSession);
+    const bool error = !queued && session && (session->state == 6 || (!active && session->status != "Client exited"));
+    // The row can be hidden by choice, but never while it carries a session or a setup the player must see.
+    if (row && state.catalog.hideGameRow && !active && !queued && !error && !expanded) return;
+    const auto close = [&] {
+        form.recovery.cancel();
+        form.changing = false;
+    };
+    const auto show = [&] { form.request({.action = Action::show, .id = std::string(normalSession)}); };
+    const auto kill = [&] {
+        form.request({.action = Action::close, .id = std::string(normalSession), .pid = session->pid});
+    };
+    const auto launch = [&] { form.request({.action = Action::launchGame}); };
+    const auto change = [&] {
+        form.changing = true;
+        draft.load(state.catalog, true);
+        draft.detect();
+    };
+    // Buttons wrap instead of clipping in a narrow window.
+    const auto beside = [](float right, const char *label) {
+        const auto width = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + width <= right) ImGui::SameLine();
+    };
+    // Choosing the installation, for first-run setup, Change, and repair.
+    const auto setup = [&] {
+        const auto right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        ImGui::BeginDisabled(locked || form.recovery.saving());
+        installationFields(form, draft, window, false);
+        ImGui::BeginDisabled(!installationProblem(draft.fields()).empty() || draft.same(state.catalog));
+        if (button(repair ? "Use and launch" : "Use this installation", 0, ink().primary)) {
+            form.submit(app, {.action = Action::installation, .settings = draft.fields()});
+            form.recovery.save(form.pending);
+        }
+        ImGui::EndDisabled();
+        if (repair && saved.empty()) {
+            beside(right, "Continue launch");
+            if (button("Continue launch", 0, ink().launch))
+                form.resume(true, form.recovery.resume([&](const std::string &id) {
+                    return std::ranges::find(state.catalog.accounts, id, &Account::id) != state.catalog.accounts.end();
+                }));
+        }
+        if (repair || (form.changing && !row)) {
+            beside(right, "Cancel");
+            if (button("Cancel")) close();
+        }
+        ImGui::EndDisabled();
+    };
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    if (row) {
+        const auto origin = ImGui::GetCursorScreenPos();
+        const auto width = ImGui::GetContentRegionAvail().x;
+        const float header = 56 * scale, inset = 12 * scale, textWidth = width - 2 * inset - 72 * scale;
+        auto *draw = ImGui::GetWindowDrawList();
+        draw->ChannelsSplit(2); // The background goes behind contents measured afterwards.
+        draw->ChannelsSetCurrent(1);
+        ImGui::SetCursorScreenPos({origin.x + inset, origin.y + 8 * scale});
+        clippedText("Guild Wars 2", textWidth);
+        ImGui::SetCursorScreenPos({origin.x + inset, origin.y + 8 * scale + ImGui::GetTextLineHeightWithSpacing()});
+        const bool attention = error || (expanded && !form.changing);
+        ImGui::PushStyleColor(ImGuiCol_Text, attention ? ink().error : active || queued ? ink().accent : ink().muted);
+        clippedText(queued ? "Queued"
+                : error    ? "Needs attention"
+                : active   ? session->status.c_str()
+                : repair   ? "Fix the game location to continue"
+                : !saved.empty() ? "Choose your installation"
+                : expanded ? "Choose another installation"
+                           : "Sign in through GW2",
+            textWidth);
+        ImGui::PopStyleColor();
+        help(error ? session->status.c_str() : active || expanded ? "" : normalLaunchHelp);
+        ImGui::SetCursorScreenPos({origin.x + width - inset - 64 * scale, origin.y + (header - 28 * scale) / 2});
+        ImGui::BeginDisabled(active ? !session->canClose() : locked || (expanded && !repair && !form.changing));
+        if (iconButton(active ? Icon::close : expanded ? Icon::collapse : Icon::edit,
+                active ? "Kill game process" : expanded ? "Close" : "Change game location"))
+            active ? kill() : expanded ? close() : change();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(active ? !session->canShow : locked || queued || expanded);
+        if (iconButton(active ? Icon::show : Icon::play, active ? "Show game" : "Launch GW2")) active ? show() : launch();
+        ImGui::EndDisabled();
+        auto bottom = origin.y + header;
+        if (expanded) {
+            ImGui::SetCursorScreenPos({origin.x + inset, bottom + 4 * scale});
+            ImGui::BeginChild("##game-setup", {width - 2 * inset, 0},
+                ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoBackground);
+            setup();
+            ImGui::EndChild();
+            bottom = ImGui::GetItemRectMax().y + 10 * scale;
+        }
+        draw->ChannelsSetCurrent(0);
+        draw->AddRectFilled(origin, {origin.x + width, bottom}, ImGui::GetColorU32(rowColor), 7 * scale);
+        draw->ChannelsMerge();
+        ImGui::SetCursorScreenPos(origin);
+        ImGui::Dummy({width, bottom - origin.y});
+        return;
+    }
+    // First run, with no accounts: a card that finds GW2, then offers a launch without one.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, rowColor);
+    ImGui::BeginChild("##game", {0, 0},
+        ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
+    ImGui::PopStyleColor();
+    const auto right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    if (expanded) {
+        ImGui::TextWrapped("%s", repair ? "Fix the game location to continue launching."
+                : saved.empty()         ? "Choose another installation."
+                                        : "Where is Guild Wars 2?");
+        setup();
+    } else {
+        ImGui::TextUnformatted("Guild Wars 2");
+        ImGui::PushStyleColor(ImGuiCol_Text, ink().muted);
+        clippedText(normalGamePath(state.catalog).c_str(), std::max(1.f, ImGui::GetContentRegionAvail().x -
+            ImGui::CalcTextSize("Change").x - ImGui::GetStyle().FramePadding.x * 2 - ImGui::GetStyle().ItemSpacing.x));
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(locked);
+        if (ImGui::SmallButton("Change")) change();
+        ImGui::EndDisabled();
+        if (queued || active || error)
+            note(queued ? "Queued" : session->status, error ? ink().error : ink().accent);
+        if (active) {
+            ImGui::BeginDisabled(!session->canShow);
+            if (button("Show game")) show();
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!session->canClose());
+            if (iconButton(Icon::close, "Kill game process")) kill();
+            ImGui::EndDisabled();
+        } else {
+            ImGui::BeginDisabled(queued || locked);
+            if (button("Launch GW2", 0, ink().launch)) launch();
+            ImGui::EndDisabled();
+        }
+        beside(right, "Add account");
+        ImGui::BeginDisabled(busy);
+        if (button("Add account")) form.go(Form::Page::account);
+        ImGui::EndDisabled();
+        if (surface::shown(surface::Part::emptyState)) note(normalLaunchHelp);
+    }
+    ImGui::EndChild();
 }
 void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
-    pathField(form, window, "Game executable", form.game, 1, false, "Full path to Gw2-64.exe",
-        form.gamePathHintSince);
+    form.edited |= installationFields(form, form.install, window, true);
+    ImGui::Spacing();
     form.edited |= field("Global arguments", form.args, "e.g. -windowed -loadmapinfo");
+#ifdef _WIN32
+    form.edited |= field("mitmdump executable", form.mitmdump, "Optional full path to mitmdump.exe");
+    help("Install mitmproxy from mitmproxy.org. Leave blank to find mitmdump.exe beside the launcher or on PATH. Proxy routing is enabled separately in each account.");
+#else
+    form.edited |= field("mitmdump executable", form.mitmdump, "Optional full path to Linux mitmdump");
+    help("Install mitmproxy 12.2 or newer, bubblewrap and iproute2. Leave blank to find mitmdump on PATH. Proxy routing is enabled separately in each account.");
+#endif
     dllField(form, window, ImGui::GetContentRegionAvail().x, {});
+#ifdef _WIN32
+    programField(form, window, ImGui::GetContentRegionAvail().x, {});
+#endif
     form.edited |= ImGui::Checkbox("Hide sign-in window", &form.hide);
     help("Hide the GW2 sign-in window unless it needs your attention.");
     form.edited |= ImGui::Checkbox("Show PID", &form.showPid);
     form.edited |= ImGui::Checkbox("Always on top", &form.alwaysOnTop);
     help("Keep the launcher above other windows.");
-#ifndef _WIN32
-    ImGui::Spacing();
-    ImGui::SeparatorText("Wine / Proton");
-    form.edited |= field("Runner", form.runner, "wine, umu-run, or an absolute path");
-    pathField(form, window, "Wine prefix", form.prefix, 2, true, "Directory containing system.reg");
-    if (path(form.runner.data()).filename() == "umu-run")
-        pathField(form, window, "Proton directory", form.proton, 3, true,
-            "Directory containing the proton executable");
-#endif
+    form.edited |= ImGui::Checkbox("Minimize when the game starts", &form.minimizeOnLaunch);
+    help("Minimize the launcher once the games you launched are running.");
+    form.edited |= ImGui::Checkbox("Hide Guild Wars 2 row", &form.hideGameRow);
+    help("Hide the Guild Wars 2 row above your accounts. It returns while that game runs or needs attention.");
     ImGui::Spacing();
     ImGui::SeparatorText("Launcher updates");
-    ImGui::TextDisabled("Version %s", appVersion.data());
+    const auto &update = state.update;
+    if (appUpdatesEnabled() && update.stage == UpdateStage::current)
+        ImGui::TextDisabled("Version %s · Up to date", appVersion.data());
+    else
+        ImGui::TextDisabled("Version %s", appVersion.data());
     const auto updateNotice = appUpdateNotice();
     if (!updateNotice.empty()) ImGui::TextWrapped("%.*s", static_cast<int>(updateNotice.size()), updateNotice.data());
-    ImGui::BeginDisabled(!appUpdatesEnabled());
-    form.edited |= ImGui::Checkbox("Check automatically", &form.autoUpdate);
-    help("Check for launcher updates while the app is open.");
-    const auto &update = state.update;
+    if (!appUpdatesEnabled()) return;
+    if (!appUpdatesAlwaysOn()) {
+        form.edited |= ImGui::Checkbox("Check automatically", &form.autoUpdate);
+        help("Check for launcher updates while the app is open.");
+    }
     const bool available = update.stage == UpdateStage::available;
     ImGui::BeginDisabled(update.busy());
     const auto label = update.stage == UpdateStage::checking ? "Checking…"
@@ -1402,9 +2058,7 @@ void settingsPage(Form &form, const Snapshot &state, SDL_Window *window) {
     }
     ImGui::EndDisabled();
     if (available) ImGui::TextDisabled("Version %s available", update.version.c_str());
-    if (update.stage == UpdateStage::current) mutedText("Up to date");
     if (!update.error.empty()) ImGui::TextWrapped("%s", update.error.c_str());
-    ImGui::EndDisabled();
 }
 
 void updatePrompt(Form &form, const Snapshot &state, bool busy) {
@@ -1467,24 +2121,120 @@ void autoUpdatePrompt(Form &form, const Snapshot &state) {
     ImGui::EndPopup();
 }
 
+// Width of the open side panel, including the splitter, out of a window this wide.
+float panelPixels(const Form &form, float windowWidth, float scale) {
+    const auto &panel = surface::active().panel;
+    const auto least = panel.minWidth * scale;
+    return std::round(std::clamp(form.panelWidth * scale, least,
+        std::max(least, windowWidth - launcherMinWidth * scale)));
+}
+// Widen a normal window for the open panel, or give back exactly what was added, so the
+// launcher column keeps its size. A maximized window waits until it is restored.
+void fitPanel(Form &form, SDL_Window *window) {
+    const auto &panel = surface::active().panel;
+    const bool open = form.panelOpen && panel.draw;
+    if (open == form.panelFitted ||
+        (SDL_GetWindowFlags(window) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MINIMIZED)))
+        return;
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    int width{}, height{}, x{}, y{};
+    SDL_GetWindowSize(window, &width, &height);
+    const bool positioned = SDL_GetWindowPosition(window, &x, &y);
+    const auto minHeight = static_cast<int>(160 * scale);
+    if (!open) {
+        SDL_SetWindowMinimumSize(window, static_cast<int>(launcherMinWidth * scale), minHeight);
+        SDL_SetWindowSize(window, std::max(width - form.panelAdded, static_cast<int>(launcherMinWidth * scale)), height);
+        // Put the window back where it was if opening the panel had to move it.
+        if (form.panelShift && positioned && x == form.panelShift->second)
+            SDL_SetWindowPosition(window, form.panelShift->first, y);
+        form.panelShift.reset();
+        form.panelAdded = 0;
+        form.panelFitted = false;
+        return;
+    }
+    // The panel gets the launcher's width, doubling the window, unless the screen is too narrow.
+    form.panelWidth = std::max(panel.minWidth, static_cast<float>(width) / scale);
+    auto target = width + static_cast<int>(std::round(form.panelWidth * scale));
+    SDL_Rect bounds{};
+    if (positioned && SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(window), &bounds)) {
+        target = std::max(width, std::min(target, bounds.w));
+        if (x + target > bounds.x + bounds.w) {
+            const auto moved = std::max(bounds.x, bounds.x + bounds.w - target);
+            form.panelShift = std::pair{x, moved};
+            SDL_SetWindowPosition(window, moved, y);
+        }
+    }
+    SDL_SetWindowSize(window, target, height);
+    form.panelAdded = target - width;
+    form.panelWidth = std::max(panel.minWidth, static_cast<float>(form.panelAdded) / scale);
+    form.panelFitted = true;
+    SDL_SetWindowMinimumSize(window, static_cast<int>((launcherMinWidth + panel.minWidth) * scale), minHeight);
+}
+void togglePanel(Form &form, SDL_Window *window) {
+    form.togglePanel = false;
+    if (!surface::active().panel.draw) return;
+    form.panelOpen = !form.panelOpen;
+    // A maximized window splits in half until it is restored.
+    if (form.panelOpen && (SDL_GetWindowFlags(window) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN))) {
+        int width{}, height{};
+        SDL_GetWindowSize(window, &width, &height);
+        form.panelWidth = std::max(surface::active().panel.minWidth,
+            static_cast<float>(width) / 2 / ImGui::GetStyle().FontScaleDpi);
+    }
+    fitPanel(form, window);
+}
+// While the side panel is open, the launcher draws in a left column of its own width.
+void beginLauncherColumn(const Form &form) {
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    const auto panel = panelPixels(form, ImGui::GetWindowWidth(), scale);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{});
+    ImGui::BeginChild("##launcher", {std::max(1.f, ImGui::GetContentRegionAvail().x - panel), 0},
+        ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleColor();
+}
+void panelColumn(Form &form) {
+    ImGui::EndChild();
+    const auto scale = ImGui::GetStyle().FontScaleDpi;
+    const auto &panel = surface::active().panel;
+    // The divider keeps the window's edge padding on both sides.
+    const auto gap = 2 * ImGui::GetStyle().WindowPadding.x;
+    ImGui::SameLine(0, 0);
+    // Dragging the splitter trades width between the two columns; the window keeps its size.
+    ImGui::InvisibleButton("##panel-splitter", {gap, std::max(1.f, ImGui::GetContentRegionAvail().y)});
+    const bool dragging = ImGui::IsItemActive();
+    if (dragging || ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (dragging) {
+        const auto right = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
+        const auto most = std::max(panel.minWidth, (ImGui::GetWindowWidth() - launcherMinWidth * scale) / scale);
+        form.panelWidth = std::clamp((right - ImGui::GetIO().MousePos.x + gap * 0.5f) / scale, panel.minWidth, most);
+    }
+    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const auto line = std::floor((min.x + max.x) * 0.5f);
+    ImGui::GetWindowDrawList()->AddLine({line, min.y + 4 * scale}, {line, max.y - 4 * scale},
+        ImGui::GetColorU32(dragging || ImGui::IsItemHovered() ? ImGuiCol_SeparatorHovered : ImGuiCol_Separator),
+        scale);
+    ImGui::SameLine(0, 0);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{});
+    ImGui::BeginChild("##panel", {0, 0}, ImGuiChildFlags_None,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleColor();
+    panel.draw();
+    form.panelFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) ||
+        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    ImGui::EndChild();
+}
+
 void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, bool &open) {
     form.observe(state);
     form.observePicker();
+    // Look for the game once at startup when the saved installation cannot launch.
+    if (state.ready && !std::exchange(form.setupChecked, true) && !installationProblem(state.catalog).empty()) {
+        form.setup.load(state.catalog, true);
+        form.setup.detect();
+    }
     form.rowsMoving = false;
-    const auto scale = ImGui::GetStyle().FontScaleDpi;
     const bool busy = form.pending || form.picker || state.busy || !state.ready;
     const bool settingsLocked = form.pending || form.picker || !state.ready || state.updating();
-    const bool gamePathHint = state.error.selectGame && form.localError.empty() && !busy;
-    if (!gamePathHint)
-        form.gamePathHintSince = -1;
-    else if (form.gamePathHintSince < 0)
-        form.gamePathHintSince = ImGui::GetTime();
-    const bool addAccountHint = state.catalog.accounts.empty() && form.page == Form::Page::accounts &&
-        !busy && !gamePathHint;
-    if (!addAccountHint)
-        form.addAccountHintSince = -1;
-    else if (form.addAccountHintSince < 0)
-        form.addAccountHintSince = ImGui::GetTime();
     auto vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->Pos);
     ImGui::SetNextWindowSize(vp->Size);
@@ -1500,6 +2250,9 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     const auto &message = form.localError.empty() ? state.error.message : form.localError;
     const auto page = form.page;
     const bool accounts = page != Form::Page::settings;
+    const bool panel = form.panelOpen && surface::active().panel.draw;
+    if (panel) beginLauncherColumn(form);
+    else form.panelFocused = false;
     surface::paint(surface::Insert::beforeToolbar);
     if (surface::shown(surface::Part::toolbar)) toolbar(form, state, busy);
     surface::paint(surface::Insert::afterToolbar);
@@ -1527,12 +2280,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
             mutedText(update->status.c_str());
             ImGui::Spacing();
         }
-        if (surface::shown(surface::Part::emptyState) && state.catalog.accounts.empty() &&
-            form.page != Form::Page::account) {
-            ImGui::Dummy({0, 20 * scale});
-            centeredText("Your accounts, one click away.");
-            centeredText("Click the + button to add your first account.", true);
-        }
+        gameCard(app, form, state, window, busy);
         if (surface::shown(surface::Part::accounts) && form.page == Form::Page::account && form.id.empty())
             accountRow(nullptr, app, form, state, window, accountLayout(nullptr, form, state));
         if (surface::shown(surface::Part::accounts)) accountList(app, form, state, window, busy);
@@ -1546,6 +2294,7 @@ void render(App &app, Form &form, const Snapshot &state, SDL_Window *window, boo
     ImGui::EndChild();
     ImGui::PopID();
     ImGui::PopStyleVar();
+    if (panel) panelColumn(form);
     if (surface::shown(surface::Part::updatePrompt)) {
         autoUpdatePrompt(form, state);
         updatePrompt(form, state, busy);
@@ -1625,6 +2374,9 @@ bool pollEvents(App &app, Form &form, SDL_Window *window, SDL_GLContext context)
     if (SDL_WaitEventTimeout(&event, interactive ? 8 : 125))
         do {
             ImGui_ImplSDL3_ProcessEvent(&event);
+            if (event.type == SDL_EVENT_DROP_FILE && event.drop.data && form.panelOpen &&
+                event.drop.windowID == SDL_GetWindowID(window))
+                if (const auto drop = surface::active().panel.dropFile) drop(event.drop.data);
             if (event.type == SDL_EVENT_QUIT ||
                 (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                     event.window.windowID == SDL_GetWindowID(window)))
@@ -1683,6 +2435,17 @@ auto createWindow() {
     SDL_SetWindowHitTest(window.get(), hitTest, nullptr);
     return window;
 }
+// The launcher speaks Chinese when the only Guild Wars 2 here is the Chinese client: saved, or
+// found by a detection. A global installation, with or without the Chinese one, keeps English.
+bool chineseOnly(const Catalog &catalog, const Form &form) {
+    bool global = !catalog.gamePath.empty(), china = !catalog.chinaGamePath.empty();
+    for (const auto *install : {&form.install, &form.setup}) {
+        if (!install->found) continue;
+        for (const auto &entry : install->found->games)
+            (install->isChina(detectedGame(entry)) ? china : global) = true;
+    }
+    return china && !global;
+}
 void setupFonts(float scale) {
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
@@ -1735,6 +2498,7 @@ int run() {
         }
     } surfaceLifetime;
     setupFonts(scale);
+    text::install();
     if (!(gui.platform = ImGui_ImplSDL3_InitForOpenGL(window.get(), context)) ||
         !(gui.renderer = ImGui_ImplOpenGL3_Init("#version 130")))
         throw std::runtime_error("Could not initialize the launcher renderer.");
@@ -1760,6 +2524,14 @@ int run() {
                 if (!SDL_SetWindowAlwaysOnTop(window.get(), snapshot->catalog.alwaysOnTop))
                     form.localError = "Could not apply Always on top: " + std::string(SDL_GetError());
             }
+            // A launch is done once a game it started is running and nothing else is pending.
+            // Games recalled at startup were already running, so they never minimize.
+            if (snapshot->catalog.minimizeOnLaunch && previous && previous->ready && !snapshot->busy &&
+                std::ranges::any_of(snapshot->sessions, [&](const SessionView &session) {
+                    const auto old = previous->session(session.id);
+                    return session.active && session.state == 4 && (!old || !old->active || old->state != 4);
+                }))
+                SDL_MinimizeWindow(window.get());
             for (const auto &session : snapshot->sessions) {
                 if (!session.active || session.state != 12) continue;
                 const auto old = previous ? previous->session(session.id) : nullptr;
@@ -1782,15 +2554,21 @@ int run() {
             SDL_ShowWindow(window.get());
             restored = true;
         }
+        // Applies a panel opened or closed while maximized once the window is restored.
+        if (restored) fitPanel(form, window.get());
         const auto flags = SDL_GetWindowFlags(window.get());
         if (restored && snapshot->ready && !(flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_MAXIMIZED))) {
             WindowState current;
             int width{}, height{};
             SDL_GetWindowSize(window.get(), &width, &height);
             current.scale = ImGui::GetStyle().FontScaleDpi;
-            current.width = static_cast<int>(std::lround(width / current.scale));
+            // Remember the launcher's own width; the side panel opens closed next time.
+            const auto launcherWidth = static_cast<float>(width - (form.panelFitted ? form.panelAdded : 0));
+            current.width = static_cast<int>(std::lround(launcherWidth / current.scale));
             current.height = static_cast<int>(std::lround(height / current.scale));
             current.positioned = SDL_GetWindowPosition(window.get(), &current.x, &current.y);
+            if (form.panelFitted && form.panelShift && current.x == form.panelShift->second)
+                current.x = form.panelShift->first;
             if (current != observed) {
                 app.rememberWindow(current);
                 observed = current;
@@ -1801,9 +2579,12 @@ int run() {
             form.finish(app, *snapshot, open);
             continue;
         }
+        if (form.togglePanel) togglePanel(form, window.get());
+        text::setChinese(chineseOnly(snapshot->catalog, form));
         drawFrame(app, form, *snapshot, window.get(), context, open);
     }
     form.close();
-    return app.snapshot()->update.stage == UpdateStage::installed ? 3 : 0;
+    if (app.snapshot()->update.stage == UpdateStage::installed) return 3;
+    return surface::active().restart ? 4 : 0;
 }
 } // namespace gw2

@@ -40,14 +40,26 @@ struct Palette {
 using Paint = void (*)();
 using Style = void (*)(ImGuiStyle &style);
 
+// Optional panel to the right of the launcher. Its header button doubles the window, giving
+// the panel the launcher's width; closing it removes that width again, so the launcher keeps its size.
+struct SidePanel {
+    const char *label = "Panel"; // header button tooltip
+    float minWidth = 300; // logical pixels
+    Paint draw = nullptr; // inside the panel's child window; null hides the button
+    void (*dropFile)(const char *path) = nullptr; // a file or folder dropped while the panel is open
+};
+
 struct Surface {
     unsigned hidden = 0;
     Palette palette{};
     Style style = nullptr;
     Paint insert[static_cast<unsigned>(Insert::count)]{};
+    SidePanel panel{};
     // Main-thread lifecycle for optional services, including cancellation before SDL teardown.
     void (*poll)() = nullptr;
     void (*shutdown)() noexcept = nullptr;
+    // Set before posting SDL_EVENT_QUIT to reopen the launcher once it has closed.
+    bool restart = false;
     const char *brand = "GW2";
     const char *brandRest = "Launcher";
     const char *home = "https://github.com/Dvow/gw2-multi-launcher";

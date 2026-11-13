@@ -23,6 +23,8 @@ module;
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
+#include <dlfcn.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -35,17 +37,22 @@ module;
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -95,14 +102,14 @@ void appendU64(std::vector<unsigned char> &out, std::uint64_t value) {
         out.push_back(static_cast<unsigned char>(value >> (8 * i)));
 }
 std::uint32_t readU32(std::span<const unsigned char> bytes, std::size_t offset) {
-    if (bytes.size() - offset < 4) throw Failure("Steam sent an incomplete message.", 1010);
+    if (bytes.size() - offset < 4) throw Failure("Steam sent an incomplete message.", 1015);
     std::uint32_t value{};
     for (unsigned i = 0; i < 4; ++i)
         value |= static_cast<std::uint32_t>(bytes[offset + i]) << (8 * i);
     return value;
 }
 std::uint64_t readU64(std::span<const unsigned char> bytes, std::size_t offset) {
-    if (bytes.size() - offset < 8) throw Failure("Steam sent an incomplete message.", 1010);
+    if (bytes.size() - offset < 8) throw Failure("Steam sent an incomplete message.", 1015);
     std::uint64_t value{};
     for (unsigned i = 0; i < 8; ++i)
         value |= static_cast<std::uint64_t>(bytes[offset + i]) << (8 * i);
@@ -197,12 +204,12 @@ std::vector<Field> protoFields(std::span<const unsigned char> bytes) {
                 if ((byte & 0x80) == 0) break;
                 shift += 7;
             }
-            if (length > bytes.size() - offset) throw Failure("Steam sent an invalid message.", 1010);
+            if (length > bytes.size() - offset) throw Failure("Steam sent an invalid message.", 1015);
             field.bytes.assign(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                 bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
             offset += static_cast<std::size_t>(length);
         } else
-            throw Failure("Steam sent an invalid message.", 1010);
+            throw Failure("Steam sent an invalid message.", 1015);
         fields.push_back(std::move(field));
     }
     return fields;
@@ -456,10 +463,10 @@ Secret aes(std::span<const unsigned char, 32> key, std::span<const unsigned char
                              static_cast<ULONG>(input.size()), nullptr, ivData, ivSize, output, outputSize,
                              &written, flags);
     };
-    if (crypt(nullptr, 0, size) != 0) throw Failure("The Steam connection could not be secured.", 1010);
+    if (crypt(nullptr, 0, size) != 0) throw Failure("The Steam connection could not be secured.", 1015);
     Secret secret(size);
     if (crypt(secret.bytes.data(), size, size) != 0)
-        throw Failure("The Steam connection could not be secured.", 1010);
+        throw Failure("The Steam connection could not be secured.", 1015);
     secret.bytes.resize(size);
     return secret;
 }
@@ -554,7 +561,7 @@ Secret aes(std::span<const unsigned char, 32> key, std::span<const unsigned char
             1 &&
         EVP_CipherFinal_ex(context, secret.bytes.data() + written, &finalSize) == 1;
     EVP_CIPHER_CTX_free(context);
-    if (!ok) throw Failure("The Steam connection could not be secured.", 1010);
+    if (!ok) throw Failure("The Steam connection could not be secured.", 1015);
     secret.bytes.resize(static_cast<std::size_t>(written + finalSize));
     return secret;
 }
@@ -580,9 +587,9 @@ struct SessionCipher {
             sealedIv.bytes.insert(sealedIv.bytes.end(), sealed.bytes.begin(), sealed.bytes.end());
             return sealedIv;
         }
-        if (input.size() < 16) throw Failure("The Steam connection could not be secured.", 1010);
+        if (input.size() < 16) throw Failure("The Steam connection could not be secured.", 1015);
         auto openedIv = aes(keySpan, input.first(16), {}, false, false);
-        if (openedIv.bytes.size() != 16) throw Failure("The Steam connection could not be secured.", 1010);
+        if (openedIv.bytes.size() != 16) throw Failure("The Steam connection could not be secured.", 1015);
         std::copy(openedIv.bytes.begin(), openedIv.bytes.end(), iv.begin());
         auto cipherIv = iv;
         auto plain = aes(keySpan, input.subspan(16), cipherIv, false, true);
@@ -593,7 +600,7 @@ struct SessionCipher {
         sha1Hmac(std::span(key).first(16), macInput, mac);
         wipe(macInput.data(), macInput.size());
         if (!std::equal(mac.begin(), mac.begin() + 13, iv.begin()))
-            throw Failure("The Steam connection could not be secured.", 1010);
+            throw Failure("The Steam connection could not be secured.", 1015);
         return plain;
     }
 };
@@ -617,18 +624,229 @@ struct SteamMessage {
     std::uint64_t jobTarget{};
     std::vector<unsigned char> body;
 };
+
+// Steam's own client reaches CMs over WebSocket (wss://<endpoint>/cmsocket/): TLS
+// instead of the channel handshake, one binary message per Steam message. Steam
+// lists far more of these CMs than TCP ones, and port 443 passes networks that
+// reset other ports.
+#ifdef _WIN32
+class WebSocket {
+    HINTERNET session_{}, connection_{}, socket_{};
+    std::thread reader_;
+    std::mutex mutex_;
+    std::condition_variable arrived_;
+    std::deque<std::vector<unsigned char>> inbox_;
+    bool closed_{};
+
+    // WinHTTP only offers a blocking receive here; deadlines are kept by receive().
+    void read() {
+        std::vector<unsigned char> message, buffer(16384);
+        for (;;) {
+            DWORD count{};
+            WINHTTP_WEB_SOCKET_BUFFER_TYPE type{};
+            if (WinHttpWebSocketReceive(socket_, buffer.data(), static_cast<DWORD>(buffer.size()), &count, &type) !=
+                    NO_ERROR ||
+                message.size() + count > 4 * 1024 * 1024)
+                break;
+            if (type != WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE &&
+                type != WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE)
+                break;
+            message.insert(message.end(), buffer.begin(), buffer.begin() + count);
+            if (type == WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE) continue;
+            std::lock_guard lock(mutex_);
+            inbox_.push_back(std::exchange(message, {}));
+            arrived_.notify_one();
+        }
+        std::lock_guard lock(mutex_);
+        closed_ = true;
+        arrived_.notify_one();
+    }
+
+  public:
+    WebSocket() = default;
+    WebSocket(const WebSocket &) = delete;
+    WebSocket &operator=(const WebSocket &) = delete;
+    ~WebSocket() {
+        // Closing the handle ends the reader's pending receive.
+        if (socket_) WinHttpCloseHandle(socket_);
+        if (reader_.joinable()) reader_.join();
+        if (connection_) WinHttpCloseHandle(connection_);
+        if (session_) WinHttpCloseHandle(session_);
+    }
+    bool open(const std::string &endpoint, std::chrono::milliseconds limit) {
+        const auto colon = endpoint.rfind(':');
+        if (colon == endpoint.npos || colon == 0) return false;
+        unsigned port{};
+        const auto portText = std::string_view(endpoint).substr(colon + 1);
+        const auto parsed = std::from_chars(portText.data(), portText.data() + portText.size(), port);
+        if (parsed.ec != std::errc{} || parsed.ptr != portText.data() + portText.size() || !port || port > 65535)
+            return false;
+        std::wstring agent, host;
+        for (const auto c : std::string_view(GW2_PRODUCT_NAME)) agent.push_back(static_cast<unsigned char>(c));
+        for (const auto c : std::string_view(endpoint).substr(0, colon)) host.push_back(static_cast<unsigned char>(c));
+        const auto milliseconds = static_cast<int>(limit.count());
+        session_ = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0);
+        if (!session_ || !WinHttpSetTimeouts(session_, milliseconds, milliseconds, milliseconds, milliseconds))
+            return false;
+        connection_ = WinHttpConnect(session_, host.c_str(), static_cast<INTERNET_PORT>(port), 0);
+        if (!connection_) return false;
+        const auto request = WinHttpOpenRequest(connection_, L"GET", L"/cmsocket/", nullptr, WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (!request) return false;
+        DWORD status{}, size = sizeof(status);
+        if (WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0) &&
+            WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(request, nullptr) &&
+            WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX) &&
+            status == 101)
+            socket_ = WinHttpWebSocketCompleteUpgrade(request, 0);
+        WinHttpCloseHandle(request);
+        if (!socket_) return false;
+        // The session's timeouts bound only the upgrade: a WebSocket receive waits until
+        // a message arrives or the handle is closed (measured 2026-10-27).
+        reader_ = std::thread(&WebSocket::read, this);
+        return true;
+    }
+    void send(std::span<const unsigned char> message) {
+        if (WinHttpWebSocketSend(socket_, WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,
+                const_cast<unsigned char *>(message.data()), static_cast<DWORD>(message.size())) != NO_ERROR)
+            throw Failure("Steam disconnected. Sign in again.", 1015);
+    }
+    std::optional<std::vector<unsigned char>> receive(Clock::time_point deadline) {
+        std::unique_lock lock(mutex_);
+        arrived_.wait_until(lock, deadline, [&] { return !inbox_.empty() || closed_; });
+        if (inbox_.empty()) {
+            if (closed_) throw Failure("Steam disconnected. Sign in again.", 1015);
+            return {};
+        }
+        auto message = std::move(inbox_.front());
+        inbox_.pop_front();
+        return message;
+    }
+};
+bool webSocketsAvailable() { return true; }
+#else
+// libcurl's WebSocket calls (7.86+, on by default from 8.11) are looked up at run
+// time: supported distros ship libcurls without them, and those keep the TCP CMs.
+struct WebSocketFrame {
+    int age;
+    int flags;
+    curl_off_t offset;
+    curl_off_t bytesleft;
+    std::size_t len;
+};
+enum WebSocketFlag : unsigned {
+    wsBinary = 1u << 1,
+    wsContinued = 1u << 2,
+    wsClose = 1u << 3,
+    wsPing = 1u << 4,
+    wsPong = 1u << 6,
+};
+struct WebSocketCalls {
+    CURLcode (*receive)(CURL *, void *, std::size_t, std::size_t *, const WebSocketFrame **);
+    CURLcode (*send)(CURL *, const void *, std::size_t, std::size_t *, curl_off_t, unsigned int);
+};
+const WebSocketCalls *webSocketCalls() {
+    static const WebSocketCalls calls = [] {
+        WebSocketCalls found{};
+        const auto *info = curl_version_info(CURLVERSION_NOW);
+        for (auto protocol = info ? info->protocols : nullptr; protocol && *protocol; ++protocol) {
+            if (std::string_view(*protocol) != "wss") continue;
+            found.receive = reinterpret_cast<decltype(found.receive)>(dlsym(RTLD_DEFAULT, "curl_ws_recv"));
+            found.send = reinterpret_cast<decltype(found.send)>(dlsym(RTLD_DEFAULT, "curl_ws_send"));
+        }
+        return found;
+    }();
+    return calls.receive && calls.send ? &calls : nullptr;
+}
+bool webSocketsAvailable() { return webSocketCalls() != nullptr; }
+class WebSocket {
+    CURL *curl_{};
+    curl_socket_t socket_ = CURL_SOCKET_BAD;
+    std::vector<unsigned char> partial_;
+
+    bool wait(short events, Clock::time_point deadline) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
+        if (remaining.count() <= 0) return false;
+        pollfd pollValue{socket_, events, 0};
+        poll(&pollValue, 1, static_cast<int>(std::min<std::chrono::milliseconds::rep>(remaining.count(), 200)));
+        return true;
+    }
+
+  public:
+    WebSocket() = default;
+    WebSocket(const WebSocket &) = delete;
+    WebSocket &operator=(const WebSocket &) = delete;
+    ~WebSocket() {
+        if (curl_) curl_easy_cleanup(curl_);
+    }
+    bool open(const std::string &endpoint, std::chrono::milliseconds limit) {
+        if (!webSocketCalls() || !(curl_ = curl_easy_init())) return false;
+        const auto url = "wss://" + endpoint + "/cmsocket/";
+        curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl_, CURLOPT_CONNECT_ONLY, 2L);
+        curl_easy_setopt(curl_, CURLOPT_USERAGENT, GW2_PRODUCT_NAME);
+        curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(limit.count()));
+        curl_easy_setopt(curl_, CURLOPT_TIMEOUT_MS, static_cast<long>(limit.count()));
+        return curl_easy_perform(curl_) == CURLE_OK &&
+            curl_easy_getinfo(curl_, CURLINFO_ACTIVESOCKET, &socket_) == CURLE_OK && socket_ != CURL_SOCKET_BAD;
+    }
+    void send(std::span<const unsigned char> message) {
+        const auto deadline = Clock::now() + std::chrono::seconds(10);
+        std::size_t done = 0;
+        while (done < message.size()) {
+            std::size_t sent{};
+            const auto code = webSocketCalls()->send(curl_, message.data() + done, message.size() - done, &sent, 0, wsBinary);
+            if (code == CURLE_AGAIN) {
+                if (!wait(POLLOUT, deadline)) throw Failure("Steam disconnected. Sign in again.", 1015);
+                continue;
+            }
+            if (code != CURLE_OK) throw Failure("Steam disconnected. Sign in again.", 1015);
+            done += sent;
+        }
+    }
+    std::optional<std::vector<unsigned char>> receive(Clock::time_point deadline) {
+        unsigned char buffer[16384];
+        for (;;) {
+            std::size_t count{};
+            const WebSocketFrame *frame{};
+            const auto code = webSocketCalls()->receive(curl_, buffer, sizeof(buffer), &count, &frame);
+            if (code == CURLE_AGAIN) {
+                if (!wait(POLLIN, deadline)) return {};
+                continue;
+            }
+            if (code != CURLE_OK || !frame || (frame->flags & wsClose))
+                throw Failure("Steam disconnected. Sign in again.", 1015);
+            // libcurl answers pings itself.
+            if (frame->flags & (wsPing | wsPong)) continue;
+            if (partial_.size() + count > 4 * 1024 * 1024) throw Failure("Steam sent a message that is too large.", 1015);
+            partial_.insert(partial_.end(), buffer, buffer + count);
+            if (frame->bytesleft || (frame->flags & wsContinued)) continue;
+            if (!(frame->flags & wsBinary)) throw Failure("Steam sent an invalid message.", 1015);
+            return std::exchange(partial_, {});
+        }
+    }
+};
+#endif
+
 struct SteamLink {
 #ifdef _WIN32
     SOCKET socket = INVALID_SOCKET;
 #else
     int socket = -1;
 #endif
+    // Set for a WebSocket CM; otherwise the TCP socket and channel cipher are used.
+    std::unique_ptr<WebSocket> webSocket;
     bool secure{};
     SessionCipher cipher;
     std::vector<unsigned char> pending;
     std::uint64_t steamId{};
     std::uint32_t sessionId{};
     std::uint64_t nextJob = 1;
+    // Steam drops a logged-on client that sends no ClientHeartBeat for 60 s.
+    std::chrono::seconds heartbeat{};
+    Clock::time_point nextBeat{};
     std::vector<Secret> tokens;
     std::deque<SteamMessage> inbox;
     ~SteamLink() { close(); }
@@ -636,6 +854,7 @@ struct SteamLink {
     SteamLink(const SteamLink &) = delete;
     SteamLink &operator=(const SteamLink &) = delete;
     void close() {
+        webSocket.reset();
 #ifdef _WIN32
         if (socket != INVALID_SOCKET) closesocket(socket);
         socket = INVALID_SOCKET;
@@ -665,11 +884,15 @@ struct SteamLink {
 #else
             const auto count = ::send(socket, bytes.data() + sent, bytes.size() - sent, MSG_NOSIGNAL);
 #endif
-            if (count <= 0) throw Failure("Steam disconnected. Sign in again.", 1010);
+            if (count <= 0) throw Failure("Steam disconnected. Sign in again.", 1015);
             sent += static_cast<std::size_t>(count);
         }
     }
     void sendPacket(std::span<const unsigned char> message) {
+        if (webSocket) {
+            webSocket->send(message);
+            return;
+        }
         std::array<unsigned char, 8> header{};
         const auto size = static_cast<std::uint32_t>(message.size());
         for (unsigned i = 0; i < 4; ++i) header[i] = static_cast<unsigned char>(size >> (8 * i));
@@ -681,6 +904,7 @@ struct SteamLink {
         sendRaw(message);
     }
     std::optional<std::vector<unsigned char>> nextPacket(Clock::time_point deadline) {
+        if (webSocket) return webSocket->receive(deadline);
         while (pending.size() < 8 || pending.size() < 8 + readU32(pending, 0)) {
             if (Clock::now() >= deadline) return {};
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
@@ -692,14 +916,14 @@ struct SteamLink {
 #else
             const auto count = recv(socket, buffer, sizeof(buffer), 0);
 #endif
-            if (count <= 0) throw Failure("Steam disconnected. Sign in again.", 1010);
+            if (count <= 0) throw Failure("Steam disconnected. Sign in again.", 1015);
             pending.insert(pending.end(), buffer, buffer + count);
             if (pending.size() >= 4 && readU32(pending, 0) > 4 * 1024 * 1024)
-                throw Failure("Steam sent a message that is too large.", 1010);
+                throw Failure("Steam sent a message that is too large.", 1015);
         }
         const auto size = readU32(pending, 0);
         if (readU32(pending, 4) != 0x31305456u)
-            throw Failure("Steam sent an invalid message.", 1010);
+            throw Failure("Steam sent an invalid message.", 1015);
         std::vector<unsigned char> packet(pending.begin() + 8, pending.begin() + 8 + size);
         pending.erase(pending.begin(), pending.begin() + 8 + size);
         return packet;
@@ -717,9 +941,9 @@ void sendPlain(SteamLink &link, std::uint32_t emsg, std::span<const unsigned cha
 void handshake(SteamLink &link) {
     auto packet = link.nextPacket(Clock::now() + std::chrono::seconds(15));
     if (!packet || packet->size() < 28 || readU32(*packet, 0) != 1303)
-        throw Failure("Steam did not respond in time. Check your connection and try again.", 1010);
+        throw Failure("Steam did not respond in time. Check your connection and try again.", 1015);
     const auto challenge = std::span(*packet).subspan(28);
-    if (challenge.size() < 16) throw Failure("The Steam connection could not be secured.", 1010);
+    if (challenge.size() < 16) throw Failure("The Steam connection could not be secured.", 1015);
     std::array<unsigned char, 32> sessionKey{};
     randomBytes(sessionKey);
     std::vector<unsigned char> blob(sessionKey.size() + challenge.size());
@@ -728,7 +952,7 @@ void handshake(SteamLink &link) {
     auto key = importSpki(kSteamKey);
     auto encrypted = rsaEncrypt(key, blob, true);
     wipe(blob.data(), blob.size());
-    if (encrypted.bytes.size() != 128) throw Failure("The Steam connection could not be secured.", 1010);
+    if (encrypted.bytes.size() != 128) throw Failure("The Steam connection could not be secured.", 1015);
     std::copy(sessionKey.begin(), sessionKey.end(), link.cipher.key.begin());
     wipe(sessionKey.data(), sessionKey.size());
     std::vector<unsigned char> body;
@@ -740,7 +964,7 @@ void handshake(SteamLink &link) {
     sendPlain(link, 1304, body);
     auto result = link.nextPacket(Clock::now() + std::chrono::seconds(15));
     if (!result || result->size() < 24 || readU32(*result, 0) != 1305 || readU32(*result, 20) != 1)
-        throw Failure("The Steam connection could not be secured.", 1010);
+        throw Failure("The Steam connection could not be secured.", 1015);
     link.secure = true;
 }
 void sendProto(SteamLink &link, std::uint32_t emsg, std::span<const unsigned char> body, std::uint64_t job) {
@@ -754,6 +978,11 @@ void sendProto(SteamLink &link, std::uint32_t emsg, std::span<const unsigned cha
     appendU32(message, static_cast<std::uint32_t>(header.size()));
     message.insert(message.end(), header.begin(), header.end());
     message.insert(message.end(), body.begin(), body.end());
+    // TLS protects a WebSocket CM; a TCP CM uses the channel key from handshake().
+    if (link.webSocket) {
+        link.sendPacket(message);
+        return;
+    }
     auto sealed = link.cipher.process(message, true);
     link.sendPacket(sealed.bytes);
 }
@@ -765,9 +994,9 @@ SteamMessage decode(std::span<const unsigned char> packet) {
         if (packet.size() >= 20) message.body.assign(packet.begin() + 20, packet.end());
         return message;
     }
-    if (packet.size() < 8) throw Failure("Steam sent an incomplete message.", 1010);
+    if (packet.size() < 8) throw Failure("Steam sent an incomplete message.", 1015);
     const auto headerSize = readU32(packet, 4);
-    if (packet.size() < 8 + headerSize) throw Failure("Steam sent an incomplete message.", 1010);
+    if (packet.size() < 8 + headerSize) throw Failure("Steam sent an incomplete message.", 1015);
     const auto header = protoFields(packet.subspan(8, headerSize));
     if (const auto id = findField(header, 1); id && id->wire == 1) message.steamId = id->number;
     if (const auto session = findField(header, 2)) message.sessionId = static_cast<std::uint32_t>(session->number);
@@ -802,9 +1031,9 @@ void expandMulti(SteamLink &link, std::span<const unsigned char> body) {
     std::vector<unsigned char> plain;
     std::span<const unsigned char> bytes = payload->bytes;
     if (const auto unzipped = findField(fields, 1); unzipped && unzipped->number) {
-        if (unzipped->number > 4 * 1024 * 1024) throw Failure("Steam sent a message that is too large.", 1010);
+        if (unzipped->number > 4 * 1024 * 1024) throw Failure("Steam sent a message that is too large.", 1015);
         auto inflated = inflateGzip(payload->bytes, static_cast<std::size_t>(unzipped->number));
-        if (!inflated) throw Failure("Steam sent an invalid message.", 1010);
+        if (!inflated) throw Failure("Steam sent an invalid message.", 1015);
         plain = std::move(*inflated);
         bytes = plain;
     }
@@ -812,7 +1041,7 @@ void expandMulti(SteamLink &link, std::span<const unsigned char> body) {
     while (offset + 4 <= bytes.size()) {
         const auto size = readU32(bytes, offset);
         offset += 4;
-        if (!size || size > bytes.size() - offset) throw Failure("Steam sent an invalid message.", 1010);
+        if (!size || size > bytes.size() - offset) throw Failure("Steam sent an invalid message.", 1015);
         noteMessage(link, decode(bytes.subspan(offset, size)));
         offset += size;
     }
@@ -822,11 +1051,7 @@ void noteMessage(SteamLink &link, SteamMessage message) {
         expandMulti(link, message.body);
         return;
     }
-    if (message.emsg == 703) {
-        sendProto(link, 703, {}, link.nextJob++);
-        return;
-    }
-    if (message.emsg == 757) throw Failure("Steam disconnected. Sign in again.", 1010);
+    if (message.emsg == 757) throw Failure("Steam disconnected. Sign in again.", 1015);
     if (message.emsg == 779) {
         for (const auto &field : protoFields(message.body)) {
             if (field.id != 2 || field.bytes.empty()) continue;
@@ -840,6 +1065,10 @@ void noteMessage(SteamLink &link, SteamMessage message) {
     link.inbox.push_back(std::move(message));
 }
 std::optional<SteamMessage> pollSteam(SteamLink &link, Clock::time_point deadline) {
+    if (link.heartbeat.count() && Clock::now() >= link.nextBeat) {
+        sendProto(link, 703, {}, ~0ull);
+        link.nextBeat = Clock::now() + link.heartbeat;
+    }
     if (!link.inbox.empty()) {
         auto message = std::move(link.inbox.front());
         link.inbox.pop_front();
@@ -847,9 +1076,10 @@ std::optional<SteamMessage> pollSteam(SteamLink &link, Clock::time_point deadlin
     }
     auto packet = link.nextPacket(deadline);
     if (!packet) return {};
-    auto plain = link.secure ? link.cipher.process(*packet, false) : Secret{};
-    auto &bytes = link.secure ? plain.bytes : *packet;
-    if (!link.secure) return decode(bytes);
+    const bool sealed = link.secure && !link.webSocket;
+    auto plain = sealed ? link.cipher.process(*packet, false) : Secret{};
+    auto &bytes = sealed ? plain.bytes : *packet;
+    if (!sealed && !link.webSocket) return decode(bytes);
     noteMessage(link, decode(bytes));
     if (link.inbox.empty()) return {};
     auto message = std::move(link.inbox.front());
@@ -864,9 +1094,45 @@ SteamMessage waitSteam(SteamLink &link, std::uint32_t emsg, std::uint64_t job, i
         if (!message) continue;
         if (message->emsg == emsg && (job == 0 || message->jobTarget == job)) return std::move(*message);
     }
-    throw Failure("Steam did not respond in time. Check your connection and try again.", 1010);
+    throw Failure("Steam did not respond in time. Check your connection and try again.", 1015);
 }
 
+// A plain connect() to an unreachable CM waits out the system's SYN retries
+// (about 21 s on Windows, 2 min on Linux) before the next CM can be tried.
+bool connectWithin(SteamLink &link, const addrinfo &info, std::chrono::milliseconds limit) {
+#ifdef _WIN32
+    u_long nonBlocking = 1;
+    if (ioctlsocket(link.socket, FIONBIO, &nonBlocking) != 0) return false;
+    if (connect(link.socket, info.ai_addr, static_cast<int>(info.ai_addrlen)) != 0 &&
+        WSAGetLastError() != WSAEWOULDBLOCK)
+        return false;
+    fd_set writable, failed;
+    FD_ZERO(&writable);
+    FD_ZERO(&failed);
+    FD_SET(link.socket, &writable);
+    FD_SET(link.socket, &failed);
+    timeval time{static_cast<long>(limit.count() / 1000), static_cast<long>(limit.count() % 1000 * 1000)};
+    if (select(0, nullptr, &writable, &failed, &time) <= 0 || !FD_ISSET(link.socket, &writable)) return false;
+    int error{};
+    int size = sizeof(error);
+    if (getsockopt(link.socket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&error), &size) != 0 || error)
+        return false;
+    nonBlocking = 0;
+    return ioctlsocket(link.socket, FIONBIO, &nonBlocking) == 0;
+#else
+    const auto flags = fcntl(link.socket, F_GETFL, 0);
+    if (flags < 0 || fcntl(link.socket, F_SETFL, flags | O_NONBLOCK) != 0) return false;
+    if (connect(link.socket, info.ai_addr, info.ai_addrlen) != 0 && errno != EINPROGRESS) return false;
+    pollfd pollValue{link.socket, POLLOUT, 0};
+    if (poll(&pollValue, 1, static_cast<int>(limit.count())) <= 0) return false;
+    int error{};
+    socklen_t size = sizeof(error);
+    if (getsockopt(link.socket, SOL_SOCKET, SO_ERROR, &error, &size) != 0 || error) return false;
+    return fcntl(link.socket, F_SETFL, flags) == 0;
+#endif
+}
+// Opens a secured channel to one CM. False when it cannot be reached; a failed
+// handshake throws its 1015 failure.
 bool connectEndpoint(SteamLink &link, const std::string &endpoint) {
     const auto colon = endpoint.rfind(':');
     if (colon == endpoint.npos || colon == 0) return false;
@@ -879,24 +1145,16 @@ bool connectEndpoint(SteamLink &link, const std::string &endpoint) {
     if (getaddrinfo(host.c_str(), port.c_str(), &hints, &result) != 0) return false;
     for (auto *info = result; info; info = info->ai_next) {
         link.close();
+        link.socket = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
 #ifdef _WIN32
-        link.socket = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
         if (link.socket == INVALID_SOCKET) continue;
-        if (connect(link.socket, info->ai_addr, static_cast<int>(info->ai_addrlen)) != 0) continue;
 #else
-        link.socket = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
         if (link.socket < 0) continue;
-        if (connect(link.socket, info->ai_addr, info->ai_addrlen) != 0) continue;
 #endif
+        if (!connectWithin(link, *info, std::chrono::seconds(10))) continue;
         freeaddrinfo(result);
-        try {
-            handshake(link);
-            return true;
-        } catch (...) {
-            link.close();
-            link.secure = false;
-            return false;
-        }
+        handshake(link);
+        return true;
     }
     freeaddrinfo(result);
     return false;
@@ -918,7 +1176,7 @@ HttpReply https(std::wstring path, std::string_view body, bool post) {
     for (const auto c : std::string_view(GW2_PRODUCT_NAME)) agent.push_back(static_cast<unsigned char>(c));
     Internet session{WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
     if (!session.value || !WinHttpSetTimeouts(session.value, 5000, 5000, 15000, 30000))
-        throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
+        throw Failure("Could not reach Steam. Check your connection and try again.", 1015);
     Internet connection{WinHttpConnect(session.value, L"api.steampowered.com", INTERNET_DEFAULT_HTTPS_PORT, 0)};
     Internet request{connection.value ? WinHttpOpenRequest(connection.value, post ? L"POST" : L"GET", path.c_str(), nullptr,
                                             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
@@ -935,7 +1193,7 @@ HttpReply https(std::wstring path, std::string_view body, bool post) {
         DWORD status{}, size = sizeof(status);
         if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
                 &status, &size, WINHTTP_NO_HEADER_INDEX))
-            throw Failure("Steam returned an invalid response.", 1010);
+            throw Failure("Steam returned an invalid response.", 1015);
         reply.status = static_cast<int>(status);
         wchar_t eresult[16]{};
         size = sizeof(eresult);
@@ -947,20 +1205,20 @@ HttpReply https(std::wstring path, std::string_view body, bool post) {
             DWORD count{};
             if (GetTickCount64() >= deadline ||
                 !WinHttpReadData(request.value, buffer.bytes.data(), static_cast<DWORD>(buffer.bytes.size()), &count))
-                throw Failure("The Steam response was interrupted or timed out.", 1010);
+                throw Failure("The Steam response was interrupted or timed out.", 1015);
             if (!count) break;
             if (reply.body.size() + count > 1024 * 1024)
-                throw Failure("Steam sent a message that is too large.", 1010);
+                throw Failure("Steam sent a message that is too large.", 1015);
             reply.body.insert(reply.body.end(), buffer.bytes.begin(), buffer.bytes.begin() + count);
         }
     }
-    if (!sent) throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
+    if (!sent) throw Failure("Could not reach Steam. Check your connection and try again.", 1015);
     return reply;
 }
 #else
 HttpReply https(std::string_view path, std::string_view body, bool post) {
     auto curl = std::unique_ptr<CURL, decltype(&curl_easy_cleanup)>(curl_easy_init(), curl_easy_cleanup);
-    if (!curl) throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
+    if (!curl) throw Failure("Could not reach Steam. Check your connection and try again.", 1015);
     const auto url = "https://api.steampowered.com" + std::string(path);
     HttpReply reply;
     curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
@@ -999,7 +1257,7 @@ HttpReply https(std::string_view path, std::string_view body, bool post) {
     long status{};
     curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
     curl_slist_free_all(headers);
-    if (code != CURLE_OK) throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
+    if (code != CURLE_OK) throw Failure("Could not reach Steam. Check your connection and try again.", 1015);
     reply.status = static_cast<int>(status);
     return reply;
 }
@@ -1256,7 +1514,7 @@ Login signIn(Pipe &pipe, const PipeMessage &request) {
         poll(&unused, 0, 1000);
 #endif
     }
-    throw Failure("Steam did not respond in time. Check your connection and try again.", 1010);
+    throw Failure("Steam did not respond in time. Check your connection and try again.", 1015);
 }
 
 bool validSteamId(std::uint64_t id) {
@@ -1334,14 +1592,21 @@ void logOn(SteamLink &link, std::string_view name, std::string_view token) {
     auto response = waitSteam(link, 751, 0, 30);
     const auto fields = protoFields(response.body);
     const auto result = findField(fields, 1);
-    if (!result || result->number != 1)
-        throw Failure("Steam sign-in failed (" + std::to_string(result ? result->number : 2) + "). Sign in again.", 1010);
+    const auto eresult = result ? result->number : 2;
+    // TryAnotherCM (48) and ServiceUnavailable (20) are about this CM, not the account.
+    if (eresult == 48 || eresult == 20)
+        throw Failure("Steam sign-in failed (" + std::to_string(eresult) + "). Try signing in again.", 1015);
+    if (eresult != 1)
+        throw Failure("Steam sign-in failed (" + std::to_string(eresult) + "). Sign in again.", 1010);
     if (!validSteamId(link.steamId)) throw Failure("Steam returned an invalid account session.", 1010);
+    const auto beat = findField(fields, 3);
+    link.heartbeat = std::chrono::seconds(beat && beat->number >= 1 && beat->number <= 30 ? beat->number : 9);
+    link.nextBeat = Clock::now() + link.heartbeat;
 }
 std::string authTicket(SteamLink &link) {
     const auto deadline = Clock::now() + std::chrono::seconds(30);
     while (link.tokens.empty() && Clock::now() < deadline) pollSteam(link, Clock::now() + std::chrono::milliseconds(200));
-    if (link.tokens.empty()) throw Failure("Steam did not respond in time. Check your connection and try again.", 1010);
+    if (link.tokens.empty()) throw Failure("Steam did not respond in time. Check your connection and try again.", 1015);
     Secret connectToken = std::move(link.tokens.front());
     link.tokens.erase(link.tokens.begin());
     std::vector<unsigned char> ownership;
@@ -1393,11 +1658,14 @@ std::string authTicket(SteamLink &link) {
     return hex;
 }
 
-void connectSteam(SteamLink &link) {
+// Signs on through the first CM in Steam's list that takes the logon. A CM that cannot
+// be reached, drops the connection, or answers TryAnotherCM fails with 1015 and the
+// next one is used, as Steam's own client does; any other failure ends the sign-in.
+void connectSteam(std::optional<SteamLink> &link, std::string_view name, std::string_view token) {
 #ifdef _WIN32
     WSADATA data{};
     if (WSAStartup(MAKEWORD(2, 2), &data) != 0)
-        throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
+        throw Failure("Could not reach Steam. Check your connection and try again.", 1015);
 #endif
     auto reply = https(
 #ifdef _WIN32
@@ -1407,15 +1675,58 @@ void connectSteam(SteamLink &link) {
 #endif
         ,
         {}, false);
-    if (reply.status != 200) throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
-    const auto json = nlohmann::json::parse(reply.body.begin(), reply.body.end());
-    int tried = 0;
-    for (const auto &server : json.at("response").at("serverlist")) {
-        if (server.value("type", "") != "netfilter") continue;
-        if (connectEndpoint(link, server.value("endpoint", ""))) return;
-        if (++tried == 4) break;
+    if (reply.status != 200) throw Failure("Could not reach Steam. Check your connection and try again.", 1015);
+    const auto json = nlohmann::json::parse(reply.body.begin(), reply.body.end(), nullptr, false);
+    const nlohmann::json *servers{};
+    if (json.is_object() && json.contains("response") && json.at("response").is_object() &&
+        json.at("response").contains("serverlist"))
+        servers = &json.at("response").at("serverlist");
+    if (!servers || !servers->is_array()) throw Failure("Steam returned an invalid response.", 1015);
+    // WebSocket CMs first, port 443 before the others. After two of them fail, the TCP
+    // CMs get their turn before the remaining WebSocket ones, so a network that blocks
+    // either kind still reaches Steam in time. Steam's order within each kind.
+    struct Server {
+        std::string endpoint;
+        bool webSocket{};
+    };
+    std::vector<Server> webSockets, tcp;
+    for (const auto &server : *servers) {
+        if (!server.is_object()) continue;
+        const auto type = server.value("type", "");
+        if (type == "websockets" && webSocketsAvailable())
+            webSockets.push_back({server.value("endpoint", ""), true});
+        else if (type == "netfilter")
+            tcp.push_back({server.value("endpoint", ""), false});
     }
-    throw Failure("Could not reach Steam. Check your connection and try again.", 1010);
+    std::ranges::stable_partition(webSockets, [](const Server &server) { return server.endpoint.ends_with(":443"); });
+    const auto first = webSockets.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(2, webSockets.size()));
+    std::vector<Server> order(webSockets.begin(), first);
+    order.insert(order.end(), tcp.begin(), tcp.end());
+    order.insert(order.end(), first, webSockets.end());
+    // No new CM after this, so the helper answers inside the launch's 100 s Steam
+    // deadline (SteamSession::readRequest).
+    const auto deadline = Clock::now() + std::chrono::seconds(70);
+    std::optional<Failure> last;
+    for (const auto &server : order) {
+        if (Clock::now() >= deadline) break;
+        link.emplace();
+        try {
+            if (server.webSocket) {
+                auto socket = std::make_unique<WebSocket>();
+                if (!socket->open(server.endpoint, std::chrono::seconds(10))) continue;
+                link->webSocket = std::move(socket);
+            } else if (!connectEndpoint(*link, server.endpoint))
+                continue;
+            logOn(*link, name, token);
+            return;
+        } catch (const Failure &failure) {
+            if (failure.code != 1015) throw;
+            last.emplace(failure);
+        }
+    }
+    link.reset();
+    if (last) throw *last;
+    throw Failure("Could not reach Steam. Check your connection and try again.", 1015);
 }
 
 bool redirected(int argc) {
@@ -1465,11 +1776,10 @@ void runSession(Pipe &pipe) {
         login = signIn(pipe, request);
         if (request.kind == 2) wipe(request.fields[1].data(), request.fields[1].size());
     }
-    SteamLink link;
-    connectSteam(link);
+    std::optional<SteamLink> link;
     const std::string token(login.token.bytes.begin(), login.token.bytes.end());
-    logOn(link, login.name, token);
-    const auto identity = std::to_string(link.steamId);
+    connectSteam(link, login.name, token);
+    const auto identity = std::to_string(link->steamId);
     if (!expected.empty() && identity != expected)
         throw Failure("Steam signed in to a different account. Reconnect this saved account.", 1014);
     pipe.send(3, {identity, login.name, token});
@@ -1478,10 +1788,10 @@ void runSession(Pipe &pipe) {
     bool issued = false;
     for (;;) {
         const auto deadline = issued ? std::nullopt : std::optional{Clock::now() + std::chrono::seconds(600)};
-        auto command = nextCommand(pipe, link, deadline);
+        auto command = nextCommand(pipe, *link, deadline);
         if (command.kind != 5 || !command.fields.empty())
             throw Failure("The Steam sign-in request is not ready.", 1010);
-        auto ticket = authTicket(link);
+        auto ticket = authTicket(*link);
         pipe.send(4, {ticket});
         wipe(ticket.data(), ticket.size());
         issued = true;
@@ -1504,7 +1814,7 @@ int steamHelper(int argc) {
         return 1;
     } catch (const std::exception &) {
         try {
-            pipe.send(5, {"The Steam session could not continue. Check your connection and sign in again.", "1010"});
+            pipe.send(5, {"The Steam session could not continue. Check your connection and sign in again.", "1015"});
         } catch (...) {}
         return 1;
     }

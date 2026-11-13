@@ -1,27 +1,159 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 30, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 30,
+    "patch": 0
+  },
   "configurePresets": [
     {
-      "name": "debug",
+      "name": "run-debug",
+      "displayName": "Debug",
+      "description": "Everyday launcher build. No deployment inputs, tests, or installer. Choose the launcher startup item and press F5.",
       "generator": "Ninja",
-      "architecture": { "value": "x64", "strategy": "external" },
-      "binaryDir": "${sourceDir}/build/debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "GW2_BUILD_TESTS": "OFF",
+        "GW2_BUILD_PACKAGES": "OFF"
+      }
+    },
+    {
+      "name": "run-release",
+      "displayName": "Release",
+      "description": "Optimized local launcher build. For shipping, use the advanced distribution workflow.",
+      "inherits": "run-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Public Debug",
+      "description": "Public launcher without the private overlay or dev tools.",
+      "condition": {
+        "type": "equals",
+        "lhs": "$penv{KX_ADVANCED_BUILDS}",
+        "rhs": "1"
+      },
+      "generator": "Ninja",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "GW2_ENABLE_PRIVATE": "OFF",
+        "GW2_BUILD_TESTS": "ON",
+        "GW2_BUILD_PACKAGES": "ON"
+      }
     },
     {
       "name": "release",
+      "displayName": "Public Release",
       "inherits": "debug",
-      "binaryDir": "${sourceDir}/build/release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "debug", "configurePreset": "debug" },
-    { "name": "release", "configurePreset": "release" }
+    {
+      "name": "run-debug",
+      "displayName": "Debug",
+      "configurePreset": "run-debug",
+      "targets": [
+        "gw2-multi-launcher"
+      ]
+    },
+    {
+      "name": "run-release",
+      "displayName": "Release",
+      "configurePreset": "run-release",
+      "targets": [
+        "gw2-multi-launcher"
+      ]
+    },
+    {
+      "name": "debug",
+      "displayName": "Public Debug",
+      "configurePreset": "debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "$penv{KX_ADVANCED_BUILDS}",
+        "rhs": "1"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Public Release",
+      "configurePreset": "release",
+      "condition": {
+        "type": "equals",
+        "lhs": "$penv{KX_ADVANCED_BUILDS}",
+        "rhs": "1"
+      }
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "displayName": "Offline tests",
+      "configurePreset": "debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "$penv{KX_ADVANCED_BUILDS}",
+        "rhs": "1"
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Offline tests",
+      "configurePreset": "release",
+      "condition": {
+        "type": "equals",
+        "lhs": "$penv{KX_ADVANCED_BUILDS}",
+        "rhs": "1"
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ],
   "workflowPresets": [
-    { "name": "debug", "steps": [{ "type": "configure", "name": "debug" }, { "type": "build", "name": "debug" }] },
-    { "name": "release", "steps": [{ "type": "configure", "name": "release" }, { "type": "build", "name": "release" }] }
+    {
+      "name": "run-debug",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "run-debug"
+        },
+        {
+          "type": "build",
+          "name": "run-debug"
+        }
+      ]
+    },
+    {
+      "name": "run-release",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "run-release"
+        },
+        {
+          "type": "build",
+          "name": "run-release"
+        }
+      ]
+    }
   ]
 }

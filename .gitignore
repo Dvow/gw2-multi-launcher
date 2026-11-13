@@ -6,5 +6,7 @@ CMakeUserPresets.json
 .vs/
 **/obj/
 **/bin/
+__pycache__/
+*.pyc
 /private/
 /.github/workflows/kx-publish.yml

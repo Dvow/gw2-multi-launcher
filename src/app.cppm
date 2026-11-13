@@ -7,9 +7,11 @@ module;
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -54,30 +56,44 @@ enum class Action {
     verify,
     cancelConnect,
     displayName,
-    cancelSetup
+    cancelSetup,
+    launchGame, // The normal launch: GW2's own sign-in, without a saved account.
+    installation // Saves only the game, runner, prefix, and Proton fields of `settings`.
 };
+// The normal launch's session key. Account IDs are UUIDs and the updater's is empty,
+// so it names neither.
+inline constexpr std::string_view normalSession = "gw2";
 struct Command {
     Action action{};
     std::uint64_t serial{};
     std::string id{}, label{}, email{}, arguments{}, beforeId{};
     std::vector<std::string> ids{};
     std::vector<std::string> dlls{};
+    std::vector<Program> programs{};
     Secret password{};
     unsigned pid{};
     Provider provider{};
     bool enable{};
     Catalog settings{};
+    ProxySettings proxy{};
+    Secret proxyPassword{};
+    bool clearProxyPassword{};
 };
 struct SessionView {
     std::string id, status;
     std::string email{};
     unsigned state{}, pid{}, verification{};
     bool active{}, canShow{}, closing{};
+    bool wegame{}; // Started by WeGame's bridge (helper operation 5).
+    bool normal() const { return id == normalSession; }
     bool needsVerification() const { return active && !closing && (state == 12 || state == 13); }
     bool canClose() const { return active && !closing && !id.empty(); }
+    // A normal launch waiting for its player to sign in has released GW2's instance lock.
+    // One waiting for WeGame (15), or signing in through it (2), has a game that holds the
+    // lock until its window opens: the helper reports Running once it has released it.
     bool blocking() const {
-        return active && (closing || id.empty() || state < 4 || state == 9 || state == 10 ||
-            state == 11 || needsVerification());
+        return active && (closing || id.empty() || (state < 4 && !(normal() && !wegame && state == 2)) ||
+            state == 9 || state == 10 || state == 11 || state == 15 || needsVerification());
     }
 };
 struct Snapshot {
@@ -95,6 +111,8 @@ struct Snapshot {
         bool selectGame{};
     } error;
     std::string editId, editEmail;
+    // When each account's game last closed (Unix seconds), for its row's "Last played".
+    std::map<std::string, std::int64_t, std::less<>> played;
     std::uint64_t completed{};
     bool ready{}, busy{}, fatal{}, launchesQueued{};
     std::vector<std::string> queuedLaunches;
@@ -108,10 +126,23 @@ struct Snapshot {
         const auto found = std::ranges::find(sessions, id, &SessionView::id);
         return found == sessions.end() ? nullptr : &*found;
     }
+    std::int64_t lastPlayed(std::string_view id) const {
+        const auto found = played.find(id);
+        return found == played.end() ? 0 : found->second;
+    }
 };
 
 class App {
     static constexpr std::uint32_t magic = GW2_HELPER_MAGIC;
+    // Extension launch preparation (for example a client update) runs off the
+    // worker thread. The worker copies progress text and finishes the launch.
+    struct Preparation {
+        std::mutex mutex;
+        std::string status; // Guarded by mutex.
+        std::stop_source stop;
+        std::vector<std::string> dlls;
+        std::string prefix;
+    };
     struct Session {
         SessionView view;
         std::unique_ptr<Process> process;
@@ -121,6 +152,18 @@ class App {
         std::uint64_t deadline{};
         std::uint64_t started{};
         bool show{}, failed{}, closeSent{};
+        bool played{}; // Reached Running: its game's close is the account's "Last played".
+        bool managedDll{}; // The extension's DLL is loaded first, outside the user's list.
+        std::optional<std::uint32_t> updaterExit; // GW2's updater ended with this failure code (helper state 17).
+        std::shared_ptr<Preparation> preparation;
+        std::future<PreparedLaunch> prepared;
+    };
+    // A program waiting for its delay. It starts only while one of the launches it came
+    // with is queued or running, so a cancelled, failed, or exited launch starts no more.
+    struct PendingProgram {
+        std::string path;
+        std::vector<std::string> owners;
+        std::chrono::steady_clock::time_point due;
     };
     std::mutex mutex_;
     std::condition_variable_any changed_;
@@ -133,7 +176,11 @@ class App {
     std::unique_ptr<Store> store_;
     std::vector<Session> sessions_;
     std::deque<std::string> launches_;
+    std::vector<PendingProgram> programs_; // In start order.
     std::uint32_t wantedBuild_{};
+    std::string updatePath_; // The installation the running updater patches.
+    bool updateOlder_{}; // Its executable is behind the newest build (else an earlier download resumes).
+    bool updateFirst_{}; // A launch failed on an outdated GW2: run its updater before the queue.
     std::unique_ptr<SteamConnection> auth_;
     std::optional<EpicConnection> epic_;
     Secret connectedSession_;
@@ -141,8 +188,19 @@ class App {
     std::chrono::steady_clock::time_point updateDue_{std::chrono::steady_clock::time_point::max()};
     std::jthread worker_;
 
+    // Release builds have no RTTI, so the type test rethrows the exception
+    // being handled (callers are catch handlers) instead of using dynamic_cast.
     void reportError(const std::exception &error) {
-        state_.error = {error.what(), dynamic_cast<const GamePathRequired *>(&error) != nullptr};
+        bool gamePath = false;
+        if (std::current_exception()) {
+            try {
+                throw;
+            } catch (const GamePathRequired &) {
+                gamePath = true;
+            } catch (...) {
+            }
+        }
+        state_.error = {error.what(), gamePath};
     }
     void publish() {
         state_.auth.connected = !connectedSession_.bytes.empty();
@@ -178,17 +236,71 @@ class App {
         return std::ranges::any_of(
             sessions_, [&](const Session &s) { return s.view.id == id && s.view.active; });
     }
-    static std::string failure(std::uint32_t code) {
-        if ((code & 0xFF000000u) == 0x40000000u)
-            return "DLL " + std::to_string((code >> 16) & 0xFF) +
+    // An account's game that reached Running closed: its row shows "Last played" from now. Its
+    // helper wrote the file just before reporting the close; this covers a game recalled from an
+    // earlier launcher run, whose helper may predate the file.
+    void recordPlayed(Session &session) {
+        if (!std::exchange(session.played, false)) return;
+        const auto &id = session.view.id;
+        const auto &accounts = store_->catalog().accounts;
+        if (std::ranges::find(accounts, id, &Account::id) == accounts.end()) return;
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        state_.played[id] = now;
+        try {
+            savePlayed(id, now);
+        } catch (const std::exception &) {
+        }
+    }
+    // A launch WeGame's bridge starts and signs in (helper operation 5): a WeGame account, or
+    // the normal launch of a WeGame install.
+    // The installation a session starts: the updater's, the normal launch's, or its account's.
+    const std::string &gameOf(std::string_view id) const {
+        static const std::string none;
+        const auto &catalog = store_->catalog();
+        if (id.empty()) return updatePath_;
+        if (id == normalSession) return normalGamePath(catalog);
+        const auto found = std::ranges::find(catalog.accounts, id, &Account::id);
+        return found == catalog.accounts.end() ? none : gamePathFor(catalog, *found);
+    }
+    bool viaWeGame(std::string_view id) const {
+        if (id == normalSession) return wegame(normalGamePath(store_->catalog()));
+        const auto &accounts = store_->catalog().accounts;
+        const auto found = std::ranges::find(accounts, id, &Account::id);
+        return found != accounts.end() && found->provider == Provider::wegame;
+    }
+    static std::string failure(std::uint32_t code, bool managedDll = false) {
+        if ((code & 0xFF000000u) == 0x40000000u) {
+            const auto index = (code >> 16) & 0xFF;
+            if (managedDll && index == 1)
+                return std::string(appExtension().managedName) + " could not be copied or loaded (Windows error " +
+                    std::to_string(code & 0xFFFF) +
+                    "). Check temporary-folder access and your antivirus. Close this client before retrying.";
+            return "DLL " + std::to_string(index - managedDll) +
                 " could not be copied or loaded (Windows error " + std::to_string(code & 0xFFFF) +
                 "). Check the file, temporary-folder access, its 64-bit dependencies, and initialization. "
                 "Close this client before retrying.";
+        }
         switch (code) {
+        case 1020:
+#ifdef _WIN32
+            return "Proxy setup failed. Install mitmproxy, select mitmdump.exe in Settings, and allow its Windows capture helper.";
+#else
+            return "Proxy setup failed. Check mitmproxy 12.2+, Python 3, bubblewrap and iproute2, and free space for this account's Wine prefix. Close any other launch of this account and retry.";
+#endif
+        case 1021:
+            return "The account proxy rejected a connection or could not be reached. Check its address, port, credentials, and allowed destinations. The client was stopped.";
+        case 1022:
+            return "The proxy capture helper stopped responding. The client was stopped; retry the launch.";
+        case 1023:
+            return "The Windows capture helper cannot run under Wine. Reinstall the complete Linux launcher package.";
+        case 1024:
+            return "The isolated proxy network could not start. Check that bubblewrap can create user/network namespaces and /dev/net/tun is available. Select a working Linux mitmdump 12.2+ executable in Settings. The client was not started.";
         case 1001:
             return "Wine could not resolve the game path.";
         case 1002:
-            return "Close clients opened outside this launcher, then try again.";
+            return "Another GW2 client is blocking new ones: one opened outside this launcher, or one that "
+                   "failed before signing in. Close it, then try again.";
         case 1003:
             return "GW2 needs attention. Select Show to open its window.";
         case 1004:
@@ -197,10 +309,32 @@ class App {
             return "Close every GW2 client before updating, and check that Gw2.dat is writable.";
         case 1006:
             return "The official GW2 updater did not finish. Launch again to resume it.";
+        case 1041:
+        case 1042:
+        case 1043: {
+            // GW2 adds its Settings.json arguments to every start, the updater's too, and
+            // refuses to patch with these (native/patch_flags.hpp). The China client reads
+            // the same file. Not "%APPDATA%": a text pattern would read "%A" as a value.
+            const std::string flags =
+                code == 1041 ? "-shareArchive" : code == 1042 ? "-noPatch" : "-shareArchive and -noPatch";
+#ifdef _WIN32
+            return "GW2 cannot update while its Settings.json holds " + flags +
+                ". Remove that from \"arguments\" in AppData\\Roaming\\Guild Wars 2\\Settings.json, then launch "
+                "again. The launcher adds what it needs itself.";
+#else
+            return "GW2 cannot update while its Settings.json holds " + flags +
+                ". Remove that from \"arguments\" in AppData/Roaming/Guild Wars 2/Settings.json inside the Wine "
+                "prefix, then launch again. The launcher adds what it needs itself.";
+#endif
+        }
         case 1007:
             return "GW2's platform connection could not be prepared. Close the game and try again.";
         case 1008:
             return "Could not terminate this GW2 process. Try Close again or end it in Task Manager.";
+        case 1030:
+            return "WeGame's GW2WGLauncher.exe is missing beside Gw2-64.exe. Repair the game in WeGame.";
+        case 1031:
+            return "WeGame runs Guild Wars 2 as administrator. Run the launcher as administrator, then launch again.";
         case 258:
             return "GW2 timed out. Select Show to check its window.";
         case 1103:
@@ -215,6 +349,9 @@ class App {
             return "The saved Steam session expired or was revoked. Edit this account and reconnect Steam.";
         case 1014:
             return "Steam returned a different account identity. Reconnect this saved account.";
+        case 1015:
+            return "Could not connect to Steam. Check your internet connection, then launch again. "
+                   "There is no need to sign in again.";
         default:
             if (code > 20000 && code < 85536)
                 return "GW2 sign-in returned error " + std::to_string(code - 20000) +
@@ -222,6 +359,31 @@ class App {
             return "The game helper reported error " + std::to_string(code) +
                 ". Check its window before retrying.";
         }
+    }
+    // Failure 1006 with the code GW2's updater ended on: 1 is GW2's own fatal error, which it
+    // shows in a window and writes to ArenaNet.log; other codes are an end from outside or a
+    // crash before GW2 could report it.
+    static std::string updaterFailure(std::uint32_t exitCode) {
+        // Small codes in decimal, as GW2 and Task Manager give them; a Windows status
+        // (0xC0000005) the way Windows writes it.
+        std::string code = std::to_string(exitCode);
+        if (exitCode >= 0x10000) {
+            char digits[8]{};
+            const auto end = std::to_chars(digits, digits + sizeof(digits), exitCode, 16).ptr;
+            code.assign(digits, end);
+            for (auto &digit : code)
+                if (digit >= 'a') digit = static_cast<char>(digit - ('a' - 'A'));
+            code.insert(0, "0x");
+        }
+#ifdef _WIN32
+        return "The official GW2 updater ended with an error (code " + code +
+            "). If GW2 showed an error window, it says why; the same text is at the end of ArenaNet.log in "
+            "GW2's folder under AppData\\Roaming. Launch again to retry.";
+#else
+        return "The official GW2 updater ended with an error (code " + code +
+            "). If GW2 showed an error window, it says why; the same text is at the end of ArenaNet.log in "
+            "GW2's folder under AppData/Roaming inside the Wine prefix. Launch again to retry.";
+#endif
     }
     Secret epicCredentials(const std::string &id, std::string_view name, std::stop_token stop) {
         const auto account = store_->account(id);
@@ -231,7 +393,7 @@ class App {
         // Refresh tokens rotate. Commit the replacement before launching the game,
         // so cancellation or a launch failure cannot discard the saved session.
         store_->put(
-            id, account.label, {}, account.arguments, account.dlls, Secret{}, {}, Provider::epic,
+            id, account.label, {}, account.arguments, account.dlls, account.programs, Secret{}, {}, Provider::epic,
             std::move(login.record));
         cancelled(stop);
         Secret request;
@@ -245,59 +407,145 @@ class App {
             [&](const Session &existing) { return existing.view.id == id && !existing.view.active; });
         sessions_.emplace_back();
         auto &session = sessions_.back();
-        session.view = {.id = id, .status = update ? "Starting updater…" : "Starting…", .active = true};
+        session.view = {.id = id, .status = update ? "Starting updater…" : "Starting…", .active = true,
+            .wegame = !update && viaWeGame(id)};
         publish();
         try {
-            auto dlls = update ? std::vector<std::string>{} : launchDlls(store_->account(id), store_->catalog());
-            if (!update && appExtension().prepareLaunch) appExtension().prepareLaunch(dlls, stop);
-            Secret epicRequest;
-            if (!update && store_->account(id).provider == Provider::epic)
-                epicRequest = epicCredentials(id, "1", stop);
-            const auto &catalog = store_->catalog();
-            auto &bytes = session.outgoing.bytes;
-            const auto steam = !update && store_->account(id).provider == Provider::steam;
-            if (steam) {
-                const auto &account = store_->account(id);
-                session.outgoing = steamRequest(catalog, account, openAccount(account, stop), dlls);
-#ifdef _WIN32
-                constexpr auto executable = GW2_PROGRAM_FILE ".exe";
-#else
-                constexpr auto executable = GW2_PROGRAM_FILE;
-#endif
-                session.process = std::make_unique<Process>(
-                    std::vector<std::string>{utf8(installed(executable)), "--steam-session"},
-                    std::vector<std::pair<std::string, std::string>>{});
-            } else {
-                if (update) {
-                    appendNumber(bytes, magic);
-                    appendNumber(bytes, 1);
-                    wireString(bytes, catalog.gamePath);
-                } else {
-                    const auto &account = store_->account(id);
-                    gameRequest(bytes, catalog, account, dlls);
-                    auto secret =
-                        account.provider == Provider::epic ? std::move(epicRequest) : openAccount(account, stop);
-                    if (account.provider == Provider::arenaNet)
-                        session.view.email = fromUtf16(
-                            std::span(secret.bytes).subspan(8, (number(secret.bytes) + 1) * 2));
-                    // Reserve before copying the password, so vector growth cannot leave
-                    // abandoned plaintext allocations behind.
-                    bytes.reserve(bytes.size() + 5 + secret.bytes.size());
-                    bytes.push_back(3);
-                    if (account.provider != Provider::epic)
-                        appendNumber(bytes, static_cast<std::uint32_t>(secret.bytes.size()));
-                    bytes.insert(bytes.end(), secret.bytes.begin(), secret.bytes.end());
-                }
-                cancelled(stop);
-                session.process = gameRunner(catalog, dllDirectories(dlls));
+            auto dlls = update ? std::vector<std::string>{}
+                               : launchDlls(session.view.normal() ? Account{} : store_->account(id),
+                                     store_->catalog());
+            if (!update && appExtension().prepareLaunch) {
+                auto preparation = std::make_shared<Preparation>();
+                preparation->dlls = std::move(dlls);
+                preparation->prefix = store_->catalog().prefix;
+                session.prepared = std::async(std::launch::async,
+                    [preparation, prepare = appExtension().prepareLaunch] {
+                        return prepare(preparation->dlls, preparation->prefix, preparation->stop.get_token(),
+                            [&](std::string status) {
+                                std::lock_guard lock(preparation->mutex);
+                                preparation->status = std::move(status);
+                            });
+                    });
+                session.preparation = std::move(preparation);
+                return; // poll() continues this launch when preparation finishes.
             }
-            session.deadline = SDL_GetTicks() + 90000;
+            launch(session, std::move(dlls), stop);
         } catch (...) {
             sessions_.pop_back();
             publish();
             throw;
         }
         publish();
+    }
+    void launch(Session &session, std::vector<std::string> dlls, std::stop_token stop) {
+        const auto id = session.view.id;
+        const bool update = id.empty();
+        // The updater and the normal launch use no saved account.
+        const auto account = update || session.view.normal() ? Account{} : store_->account(id);
+        // Each account starts its own client's installation: the Chinese client for KongZhong
+        // and WeGame accounts (that branch has no Steam or Epic sign-in), the global one otherwise.
+        const auto &game = update ? updatePath_ : gamePathFor(store_->catalog(), account);
+        if (game.empty())
+            throw std::runtime_error(chinaProvider(account.provider)
+                    ? "KongZhong and WeGame accounts need the Chinese client. Choose its Gw2-64.exe in Settings."
+                    : "This account needs Guild Wars 2. Choose its Gw2-64.exe in Settings.");
+        if (account.provider == Provider::wegame && !wegame(game))
+            throw std::runtime_error("WeGame accounts need the WeGame edition of the game. In Settings, choose the "
+                                     "Gw2-64.exe in your WeGame game folder.");
+        // WeGame starts one game at a time, and that game holds Gw2.dat for itself.
+        if (!update && viaWeGame(id) && std::ranges::any_of(sessions_, [&](const Session &other) {
+                return &other != &session && other.view.active && viaWeGame(other.view.id);
+            }))
+            throw std::runtime_error("WeGame runs one Guild Wars 2 at a time. Close the running one first.");
+        Secret epicRequest;
+        if (account.provider == Provider::epic) epicRequest = epicCredentials(id, "1", stop);
+        const auto &catalog = store_->catalog();
+        // A client started beside another running one gets its own MumbleLink.
+        const bool ownMumble = std::ranges::any_of(sessions_, [&](const Session &other) {
+            return &other != &session && other.view.active && !other.view.id.empty();
+        });
+        auto &bytes = session.outgoing.bytes;
+        // Both login and proxy credentials stay in this wiping allocation: do
+        // not grow the vector after appending either plaintext record.
+        bytes.reserve(262144);
+        if (account.provider == Provider::steam) {
+            session.outgoing = steamRequest(catalog, account, openAccount(account, stop), dlls, ownMumble, stop);
+#ifdef _WIN32
+            constexpr auto executable = GW2_PROGRAM_FILE ".exe";
+#else
+            constexpr auto executable = GW2_PROGRAM_FILE;
+#endif
+            session.process = std::make_unique<Process>(
+                std::vector<std::string>{utf8(installed(executable)), "--steam-session"},
+                std::vector<std::pair<std::string, std::string>>{});
+        } else {
+            if (update) {
+                appendNumber(bytes, magic);
+                appendNumber(bytes, 1);
+                wireString(bytes, game);
+                appendNumber(bytes, updateOlder_ ? 1 : 0);
+            } else
+                gameRequest(bytes, catalog, account, dlls, ownMumble, stop);
+            // The normal launch and WeGame accounts send no credentials.
+            if (!account.id.empty() && account.provider != Provider::wegame) {
+                auto secret =
+                    account.provider == Provider::epic ? std::move(epicRequest) : openAccount(account, stop);
+                if (passwordLogin(account.provider))
+                    session.view.email = fromUtf16(
+                        std::span(secret.bytes).subspan(8, (number(secret.bytes) + 1) * 2));
+                // Reserve before copying the password, so vector growth cannot leave
+                // abandoned plaintext allocations behind.
+                bytes.reserve(bytes.size() + 5 + secret.bytes.size());
+                bytes.push_back(3);
+                if (account.provider != Provider::epic)
+                    appendNumber(bytes, static_cast<std::uint32_t>(secret.bytes.size()));
+                bytes.insert(bytes.end(), secret.bytes.begin(), secret.bytes.end());
+            }
+            cancelled(stop);
+            session.process = gameRunner(catalog, game, dllDirectories(dlls), account.proxy.enabled);
+        }
+        session.deadline = SDL_GetTicks() + 90000;
+    }
+    bool pollPreparation(Session &session, std::stop_token stop) {
+        auto &preparation = *session.preparation;
+        if (session.view.closing || stop.stop_requested()) preparation.stop.request_stop();
+        bool changed{};
+        {
+            std::lock_guard lock(preparation.mutex);
+            if (!preparation.status.empty() && !session.view.closing) {
+                session.view.status = std::exchange(preparation.status, {});
+                changed = true;
+            }
+        }
+        if (session.prepared.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return changed;
+        const auto finished = std::exchange(session.preparation, {});
+        try {
+            auto prepared = session.prepared.get();
+            session.managedDll = prepared.managedDll;
+            // The game starts without the extension's DLL: say why here, as for a program that
+            // failed to start. The launch itself goes on.
+            if (!prepared.problem.empty() && !session.view.closing && state_.error.message.empty())
+                state_.error = {std::move(prepared.problem)};
+            if (!session.view.closing) {
+                session.view.status = "Starting…";
+                launch(session, std::move(finished->dlls), stop);
+            }
+        } catch (const std::exception &e) {
+            if (!session.view.closing) {
+                session.failed = true;
+                session.view.active = false;
+                session.view.status = e.what();
+                session.process.reset();
+                session.outgoing.clear();
+                reportError(e);
+                launches_.clear();
+            }
+        }
+        if (session.view.closing) {
+            session.view.active = session.view.closing = false;
+            session.view.status = "Launch cancelled";
+        }
+        return true;
     }
     void prepare(std::stop_token stop);
     void saveAccount(Command &command, std::stop_token stop) {
@@ -313,9 +561,11 @@ class App {
         Secret candidate;
         candidate.bytes.assign(connectedSession_.bytes.begin(), connectedSession_.bytes.end());
         const auto id = command.id;
-        store_->put(std::move(command.id), std::move(command.label), std::move(command.email),
-            std::move(command.arguments), std::move(command.dlls), std::move(command.password), stop,
-            command.provider, std::move(candidate));
+        store_->putProxy(std::move(command.id), std::move(command.label), std::move(command.email),
+            std::move(command.arguments), std::move(command.dlls), std::move(command.programs),
+            std::move(command.password), stop,
+            command.provider, std::move(candidate), std::move(command.proxy),
+            std::move(command.proxyPassword), command.clearProxyPassword);
         clearAuthentication();
         if (id.empty()) return;
         const auto &account = store_->account(id);
@@ -327,31 +577,88 @@ class App {
             throw std::runtime_error("This account is queued to launch.");
         clearAuthentication();
         const auto &account = store_->account(command.id);
-        auto secret = openAccount(account, stop);
-        if (account.provider == Provider::arenaNet)
+        state_.editEmail.clear();
+        if (passwordLogin(account.provider)) {
+            auto secret = openAccount(account, stop);
             state_.editEmail = fromUtf16(std::span(secret.bytes).subspan(8, (number(secret.bytes) + 1) * 2));
-        else
+        } else if (platformLogin(account.provider)) {
+            (void)openAccount(account, stop);
             state_.auth = {command.id, {}, {}, account.identity, account.username};
+        }
         state_.auth.provider = account.provider;
         state_.editId = command.id;
     }
     void queueLaunch(Command &command, std::stop_token stop) {
-        if (command.ids.empty()) throw std::runtime_error("Select an account to launch.");
-        // Resolve every requested identity before preparing any client. A stale or empty
-        // selection must never fall back to launching all accounts.
-        for (const auto &id : command.ids)
-            (void)store_->account(id);
-        const bool underway = !launches_.empty() || blocked();
-        bool added = false;
-        for (const auto &a : store_->catalog().accounts) {
-            if (std::ranges::find(command.ids, a.id) == command.ids.end()) continue;
-            if (active(a.id) || std::ranges::find(launches_, a.id) != launches_.end()) continue;
-            launches_.push_back(a.id);
-            added = true;
+        const bool game = command.action == Action::launchGame;
+        if (game) {
+            // Launching GW2 again shows the running game instead of starting another.
+            if (active(normalSession)) {
+                for (auto &session : sessions_)
+                    session.show |= session.view.normal() && session.view.active && !session.view.closing;
+                return;
+            }
+            command.ids = {std::string(normalSession)};
+        } else {
+            if (command.ids.empty()) throw std::runtime_error("Select an account to launch.");
+            // Resolve every requested identity before preparing any client. A stale or empty
+            // selection must never fall back to launching all accounts.
+            for (const auto &id : command.ids)
+                (void)store_->account(id);
         }
-        if (!added && launches_.empty() && !blocked())
+        const bool underway = !launches_.empty() || blocked();
+        std::vector<std::string> added;
+        const auto queue = [&](const std::string &id) {
+            if (active(id) || std::ranges::find(launches_, id) != launches_.end()) return;
+            launches_.push_back(id);
+            added.push_back(id);
+        };
+        if (game) queue(command.ids.front());
+        for (const auto &a : store_->catalog().accounts)
+            if (std::ranges::find(command.ids, a.id) != command.ids.end()) queue(a.id);
+        if (added.empty() && launches_.empty() && !blocked())
             throw std::runtime_error("The requested accounts are already running.");
-        if (added && !underway) prepare(stop);
+        if (added.empty()) return;
+        if (!underway) {
+            updateFirst_ = false;
+            prepare(stop);
+        }
+        // Global programs, then each newly queued account's own, each after the
+        // previous one's delay. Those without a delay start now.
+        auto due = std::chrono::steady_clock::now();
+        const auto schedule = [&](const std::vector<Program> &programs, const std::vector<std::string> &owners) {
+            for (const auto &program : programs)
+                programs_.push_back({program.path, owners, due += std::chrono::seconds(program.delay)});
+        };
+        schedule(store_->catalog().programs, added);
+        for (const auto &id : added)
+            if (id != normalSession) schedule(store_->account(id).programs, {id});
+        pollPrograms();
+    }
+    // A launch still queued, or its game running and neither failed nor closing.
+    bool launching(std::string_view id) const {
+        return std::ranges::find(launches_, id) != launches_.end() ||
+            std::ranges::any_of(sessions_, [&](const Session &s) {
+                return s.view.id == id && s.view.active && !s.view.closing && !s.failed;
+            });
+    }
+    // Starts the programs whose delay has passed and drops those whose launches ended.
+    // A program that fails to start is reported; the game launch goes on.
+    bool pollPrograms() {
+        if (programs_.empty()) return false;
+        const auto now = std::chrono::steady_clock::now();
+        std::vector<std::string> due;
+        std::erase_if(programs_, [&](const PendingProgram &program) {
+            if (std::ranges::none_of(program.owners, [&](const std::string &id) { return launching(id); }))
+                return true;
+            if (program.due > now) return false;
+            due.push_back(program.path);
+            return true;
+        });
+        if (due.empty()) return false;
+        auto failure = startPrograms(due);
+        if (failure.empty() || !state_.error.message.empty()) return false;
+        state_.error = {std::move(failure)};
+        return true;
     }
     void setupAccount(Command &command, std::stop_token stop) {
         if (!validDisplayName(command.label))
@@ -360,7 +667,7 @@ class App {
             return s.view.id == command.id && s.view.active && !s.view.closing && s.view.state == 9;
         });
         if (found == sessions_.end() || !found->outgoing.bytes.empty() ||
-            store_->account(command.id).provider == Provider::arenaNet)
+            !platformLogin(store_->account(command.id).provider))
             throw std::runtime_error("This account is not waiting for a GW2 display name.");
         Secret retry;
         const bool epic = store_->account(command.id).provider == Provider::epic;
@@ -439,10 +746,35 @@ class App {
     }
     void dispatch(Command &command, std::stop_token stop) {
         switch (command.action) {
+        case Action::installation: {
+            // Repair keeps every other setting and any account edit as it is. The chosen
+            // executable replaces its own client's installation, global or Chinese.
+            auto next = store_->catalog();
+            auto chosen = trim(command.settings.gamePath);
+            (chinaClient(chosen) ? next.chinaGamePath : next.gamePath) = std::move(chosen);
+            next.runner = std::move(command.settings.runner);
+            next.prefix = std::move(command.settings.prefix);
+            next.proton = std::move(command.settings.proton);
+            command.settings = std::move(next);
+            [[fallthrough]];
+        }
         case Action::settings: {
-            if (command.settings.gamePath != store_->catalog().gamePath &&
-                (running() || !launches_.empty()))
-                throw std::runtime_error(running()
+            // Refuse only a change that moves a running client or a queued launch to another
+            // installation. Settings fills a newly found Chinese client by itself; refusing that
+            // while global games ran failed every later Settings save until they closed.
+            const auto &next = command.settings;
+            const auto moves = [&](std::string_view id) {
+                if (id.empty()) return next.gamePath != store_->catalog().gamePath ||
+                    next.chinaGamePath != store_->catalog().chinaGamePath; // the updater
+                if (id == normalSession) return normalGamePath(next) != gameOf(id);
+                const auto &accounts = store_->catalog().accounts;
+                const auto found = std::ranges::find(accounts, id, &Account::id);
+                return found != accounts.end() && gamePathFor(next, *found) != gameOf(id);
+            };
+            const bool movesRunning = std::ranges::any_of(
+                sessions_, [&](const Session &s) { return s.view.active && moves(s.view.id); });
+            if (movesRunning || std::ranges::any_of(launches_, moves))
+                throw std::runtime_error(movesRunning
                         ? "Close your clients before changing the game installation."
                         : "Wait for the current launch to finish before changing the game installation.");
             const bool check = command.settings.autoUpdate && !store_->catalog().autoUpdate;
@@ -459,6 +791,10 @@ class App {
             if (std::ranges::find(launches_, command.id) != launches_.end())
                 throw std::runtime_error("This account is queued to launch.");
             store_->remove(command.id);
+            if (state_.played.erase(command.id)) {
+                std::error_code error;
+                std::filesystem::remove(playedFile(command.id), error);
+            }
             break;
         case Action::edit:
             editAccount(command, stop);
@@ -467,6 +803,7 @@ class App {
             store_->reorder(command.id, command.beforeId);
             break;
         case Action::launch:
+        case Action::launchGame:
             queueLaunch(command, stop);
             break;
         case Action::checkUpdate:
@@ -529,9 +866,10 @@ class App {
             state_.editEmail.clear();
         }
         try {
-            if (command.action == Action::launch || command.action == Action::edit ||
-                command.action == Action::save || command.action == Action::remove ||
-                command.action == Action::settings) {
+            if (command.action == Action::launch || command.action == Action::launchGame ||
+                command.action == Action::edit || command.action == Action::save ||
+                command.action == Action::remove || command.action == Action::settings ||
+                command.action == Action::installation) {
                 if (state_.updating())
                     throw std::runtime_error("Wait for the current update to finish.");
             } else if (command.action != Action::show && command.action != Action::close &&
@@ -548,7 +886,7 @@ class App {
                 state_.auth.busy = false;
             }
             reportError(e);
-            if (command.action == Action::launch) launches_.clear();
+            if (command.action == Action::launch || command.action == Action::launchGame) launches_.clear();
         }
         state_.completed = command.serial;
         publish();
@@ -626,15 +964,32 @@ class App {
         }
         return true;
     }
-    void receiveStatus(Session &session) {
+    // A client started with -shareArchive cannot patch itself. When the asset host has a
+    // newer build, its patcher asserts "Client needs to be patched first." at startup.
+    bool outdated(const std::string &game, std::stop_token stop) const {
+        try {
+            const Image image(path(game));
+            return image.build() < remoteBuild(latestBuild(image.patchHost(), stop));
+        } catch (const std::exception &) {
+            return false; // Unchecked, the helper's own failure stands.
+        }
+    }
+    void receiveStatus(Session &session, std::stop_token stop) {
         session.received = 0;
         if (number(session.record) != magic)
             throw std::runtime_error(
                 "The Wine/Proton runner changed the helper protocol. Use wine or umu-run directly.");
         const auto state = number(session.record, 4), detail = number(session.record, 8);
-        if (state < 1 || state > 13 || (session.view.id.empty() ? state < 5 || state > 8
-                                        : state == 7 || state == 8))
+        // 7, 8 and 17 belong to the updater, which sends nothing else but its exit and failure.
+        const bool updaterState = state == 7 || state == 8 || state == 17;
+        if (state < 1 || state > 17 || (session.view.id.empty() ? !updaterState && state != 5 && state != 6
+                                        : updaterState))
             throw std::runtime_error("Unexpected game helper status.");
+        // GW2's updater ended with a failure code; the failure itself (1006) follows.
+        if (state == 17) {
+            session.updaterExit = detail;
+            return;
+        }
         if ((state == 12 || state == 13) && detail != 1 && detail != 2 && detail != 4 && detail != 5 && detail != 6)
             throw std::runtime_error("Unknown GW2 verification request. Select Show to check the game.");
         if (state == 1) {
@@ -652,40 +1007,90 @@ class App {
             } else
                 return; // Native work interrupted by Kill can report a stale login/load error.
         }
+        // An add-on in the running game asked for a restart to install its update (helper state
+        // 16): close the game, then launch it again ahead of the rest of the queue. That launch
+        // checks for the add-on's update first (recheckLaunch).
+        if (state == 16) {
+            if (session.failed || session.view.state != 4) return;
+            if (std::ranges::find(launches_, session.view.id) == launches_.end())
+                launches_.push_front(session.view.id);
+            if (appExtension().recheckLaunch) appExtension().recheckLaunch();
+            closeSession(session);
+            session.view.status = "Restarting to install an update…";
+            return;
+        }
+        // A GW2 release published after the launch's build check. The assert leaves a crash
+        // window (a failure) or ends the client (an exit). Close it, run GW2's updater, then
+        // launch it again ahead of the rest of the queue. Not a WeGame launch: WeGame updates it.
+        bool update{};
+        if ((state == 5 || state == 6) && !closing && !session.failed && !session.view.id.empty() &&
+            session.view.state != 4 && !viaWeGame(session.view.id) && outdated(gameOf(session.view.id), stop)) {
+            launches_.push_front(session.view.id);
+            updateFirst_ = update = true;
+            if (state == 6) {
+                closeSession(session);
+                session.view.status = "Closing GW2 to install its update…";
+                return;
+            }
+        }
         if (state == 5 || state == 8) {
             session.view.pid = 0;
             session.started = 0;
         }
+        // Only this launcher's own deadline (poll) leaves a session failed that later runs:
+        // a helper never reports Running after its own failure.
+        if (state == 4 && session.failed) {
+            if (state_.error.message == session.view.status) state_.error = {};
+            session.failed = false;
+        }
+        if (state == 4) session.played = true;
+        if (state == 5) recordPlayed(session);
         session.view.state = session.failed && state != 5 ? 6 : state;
         session.view.verification = state == 12 || state == 13 ? detail : 0;
         if (state == 3 || state == 4 || state == 5 || state == 6) session.view.email.clear();
         if (state == 6) {
             session.failed = true;
-            session.view.status = failure(detail);
+            session.view.status = detail == 1006 && session.updaterExit ? updaterFailure(*session.updaterExit)
+                                                                        : failure(detail, session.managedDll);
             launches_.clear();
             state_.error = {session.view.status};
         } else if (!session.failed) {
             constexpr const char *statuses[]{"", "Starting…", "Signing in…", "Opening game…", "Running",
                 "Client exited", "", "Updating GW2…", "Updated", "Choose a GW2 display name",
-                "Review GW2's agreement", "Loading DLLs…", "Verification required", "Checking verification code…"};
+                "Review GW2's agreement", "Loading DLLs…", "Verification required", "Checking verification code…",
+                "Preparing account proxy…", "Waiting for WeGame…"};
             session.view.status = statuses[state];
-            if (state == 11) session.view.status = "Loading DLL " + std::to_string(detail) + "…";
+            if (state == 11)
+                session.view.status = session.managedDll && detail == 1
+                    ? "Loading " + std::string(appExtension().managedName) + "…"
+                    : "Loading DLL " + std::to_string(detail - session.managedDll) + "…";
             if (state == 12 && detail == 5) session.view.status = "Check your email";
+            if (state == 2 && viaWeGame(session.view.id))
+                session.view.status = "Signing in through WeGame…";
+            else if (state == 2 && session.view.normal())
+                session.view.status = "Sign in through GW2";
         }
         if (state == 1 || state == 2 || state == 3 || state == 4 || state == 7 || state == 10 || state >= 11)
             session.view.canShow = true;
         if (state == 9) session.view.canShow = false;
+        if (state == 14 || state == 15) session.view.canShow = false;
         if (state == 6) session.view.canShow = session.view.pid != 0;
-        session.deadline = SDL_GetTicks() + (state == 2 || state == 13 ? 130000 : 100000);
+        // A player signing in to a normal launch, or to WeGame first, may take as long as they need.
+        session.deadline = (state == 2 && (session.view.normal() || viaWeGame(session.view.id))) || state == 15
+            ? UINT64_MAX
+            : SDL_GetTicks() + (state == 2 || state == 13 ? 130000 : 100000);
         if (state == 8) {
-            const Image image(path(store_->catalog().gamePath));
+            const Image image(path(updatePath_));
             if (image.build() < wantedBuild_)
                 throw std::runtime_error("GW2's update did not reach the current build. Try again.");
             (void)image.resolve();
-            store_->updatePending(false);
+            store_->updatePending({});
+            // The queue's other installation may need its own update: check again first.
+            if (!launches_.empty()) updateFirst_ = true;
         }
         if (state == 5 || state == 8) {
-            if (state == 5 && !session.failed && !closing && !launches_.empty())
+            if (state == 5 && !update && !session.failed && !closing && !launches_.empty() &&
+                !session.view.normal())
                 throw std::runtime_error("A client exited before all accounts finished launching.");
             session.view.active = session.view.canShow = session.view.closing = false;
             session.process.reset();
@@ -693,14 +1098,14 @@ class App {
             storeLaunches();
         }
     }
-    bool readStatus(Session &session) {
+    bool readStatus(Session &session, std::stop_token stop) {
         bool changed{};
         for (unsigned i = 0; i < 16 && session.view.active; ++i) {
             const auto count = session.process->read(std::span(session.record).subspan(session.received));
             if (!count) break;
             session.received += count;
             if (session.received == session.record.size()) {
-                receiveStatus(session);
+                receiveStatus(session, stop);
                 changed = true;
             }
         }
@@ -748,7 +1153,7 @@ class App {
                 startedParsed.ec != std::errc{} || startedParsed.ptr != startedText.data() + startedText.size() ||
                 !pid || !started)
                 continue;
-            if (std::ranges::find(accounts, id, &Account::id) == accounts.end()) continue;
+            if (id != normalSession && std::ranges::find(accounts, id, &Account::id) == accounts.end()) continue;
             const auto live = launchedGame(pid);
             if (live.reachable && live.started != started) continue;
             if (std::ranges::any_of(sessions_, [&](const Session &session) {
@@ -758,6 +1163,7 @@ class App {
             Session session;
             session.view = {.id = id, .status = "Running", .state = 4, .pid = pid, .active = true, .canShow = true};
             session.started = started;
+            session.played = true;
             sessions_.push_back(std::move(session));
         }
         storeLaunches();
@@ -765,8 +1171,11 @@ class App {
     }
     bool watchLaunch(Session &session) {
         const auto live = launchedGame(session.view.pid);
-        if (!live.reachable) return false;
-        if (live.started != session.started) {
+        // An unreachable game (elevated, or another user's) can be neither watched nor ended:
+        // its Close fails at once instead of staying "Terminating…" and holding the queue.
+        if (!live.reachable && !(session.view.closing && !session.closeSent)) return false;
+        if (live.reachable && live.started != session.started) {
+            recordPlayed(session);
             session.view.pid = 0;
             session.started = 0;
             session.view.state = 5;
@@ -777,7 +1186,7 @@ class App {
             return true;
         }
         if (session.view.closing && !session.closeSent) {
-            if (endLaunchedGame(session.view.pid, session.started)) {
+            if (live.reachable && endLaunchedGame(session.view.pid, session.started)) {
                 session.closeSent = true;
                 return true;
             }
@@ -794,11 +1203,12 @@ class App {
         return true;
     }
     bool poll(Session &session, std::stop_token stop) {
+        if (session.preparation) return pollPreparation(session, stop);
         if (!session.process) return watchLaunch(session);
         bool changed{};
         try {
             // Observe an already-exited client before writing another control byte.
-            changed = readStatus(session);
+            changed = readStatus(session, stop);
             if (!session.view.active) return true;
             if (!session.outgoing.bytes.empty()) {
                 session.process->write(session.outgoing, session.written);
@@ -831,7 +1241,7 @@ class App {
             // Its queued exit record still wins over that broken-pipe error.
             if (session.view.closing) {
                 try {
-                    readStatus(session);
+                    readStatus(session, stop);
                     if (!session.view.active) return true;
                 } catch (...) {
                 }
@@ -912,6 +1322,9 @@ class App {
         try {
             store_ = std::make_unique<Store>();
             recallLaunches();
+            // Also the closes that helpers recorded while the launcher was closed.
+            for (const auto &account : store_->catalog().accounts)
+                if (const auto time = lastPlayed(account.id)) state_.played[account.id] = time;
             if (appExtension().start) appExtension().start(stop);
             state_.ready = true;
             if (store_->catalog().autoUpdate) beginUpdate(false, stop);
@@ -947,16 +1360,21 @@ class App {
             for (auto &session : sessions_)
                 if (session.view.active) change |= poll(session, stop);
             if (!blocked() && !launches_.empty() && !stop.stop_requested()) {
-                auto id = std::move(launches_.front());
-                launches_.pop_front();
                 try {
-                    start(std::move(id), stop);
+                    if (std::exchange(updateFirst_, false))
+                        prepare(stop); // Its updater blocks the queue until GW2 is current.
+                    else {
+                        auto id = std::move(launches_.front());
+                        launches_.pop_front();
+                        start(std::move(id), stop);
+                    }
                 } catch (const std::exception &e) {
                     reportError(e);
                     launches_.clear();
                     change = true;
                 }
             }
+            change |= pollPrograms();
             if (change) publish();
             std::unique_lock lock(mutex_);
             if (!stop.stop_requested() && commands_.empty())
@@ -968,6 +1386,9 @@ class App {
         saveWindow(true);
         if (updateTask_.valid()) updateTask_.wait();
         clearAuthentication();
+        // Destroying a session waits for its preparation; ask it to stop first.
+        for (auto &session : sessions_)
+            if (session.preparation) session.preparation->stop.request_stop();
         sessions_.clear();
         if (appExtension().stop) appExtension().stop();
         store_.reset();
@@ -1002,25 +1423,60 @@ class App {
         return serial_;
     }
 };
+// The installations the queued launches start, each checked once, then the first that needs
+// GW2's updater gets it; the queue checks again after each update (receiveStatus).
 void App::prepare(std::stop_token stop) {
     const auto &catalog = store_->catalog();
-    const auto file = path(catalog.gamePath);
-    if (!file.is_absolute() || lower(utf8(file.filename())) != "gw2-64.exe")
-        throw GamePathRequired{};
-    if (!std::filesystem::exists(file.parent_path() / "Gw2.dat"))
-        throw std::runtime_error("Finish installing GW2 first; Gw2.dat must be beside Gw2-64.exe.");
+    struct Needed {
+        std::string game;
+        bool china{}, wegameOnly{true};
+    };
+    std::vector<Needed> games;
+    for (const auto &id : launches_) {
+        const auto &game = gameOf(id);
+        auto found = std::ranges::find(games, game, &Needed::game);
+        if (found == games.end()) {
+            const auto account = std::ranges::find(catalog.accounts, id, &Account::id);
+            games.push_back({game,
+                account == catalog.accounts.end() ? catalog.gamePath.empty() : chinaProvider(account->provider),
+                true});
+            found = games.end() - 1;
+        }
+        found->wegameOnly &= viaWeGame(id);
+    }
+    for (const auto &needed : games) {
+        auto single = catalog;
+        single.gamePath = needed.game;
+        single.chinaGamePath.clear();
+        const auto problem = needed.game.empty()
+            ? std::string(needed.china ? "Choose the Chinese client's Gw2-64.exe in Settings." : "Choose your Gw2-64.exe.")
+            : installationProblem(single);
+        if (problem.empty()) continue;
+        // The home page repairs the normal launch's installation; the other is in Settings.
+        if (needed.game == normalGamePath(catalog)) throw GamePathRequired{problem};
+        throw std::runtime_error(problem);
+    }
     publish();
-    const auto installed = Image(file).build();
-    wantedBuild_ = remoteBuild(latestBuild(stop));
-    if (wantedBuild_ < 10000 || wantedBuild_ > 10000000)
-        throw std::runtime_error("Invalid GW2 build number.");
-    const bool newerBuild = installed < wantedBuild_;
-    if (!newerBuild && !catalog.updatePending) return;
-    if (running())
-        throw std::runtime_error(newerBuild
-                ? "A GW2 update is available. Close all game clients, then launch again."
-                : "A previous GW2 download needs to finish. Close all game clients, then launch again.");
-    store_->updatePending(true);
-    start({}, stop);
+    for (const auto &needed : games) {
+        // WeGame updates its install before its bridge starts the game: WeGame launches alone
+        // run no updater here, which would also move the install past WeGame's own build.
+        if (needed.wegameOnly) continue;
+        const auto &game = needed.game;
+        const Image image(path(game));
+        const auto wanted = remoteBuild(latestBuild(image.patchHost(), stop));
+        if (wanted < 10000 || wanted > 10000000) throw std::runtime_error("Invalid GW2 build number.");
+        const bool newerBuild = image.build() < wanted;
+        if (!newerBuild && store_->catalog().updatePending != game) continue;
+        if (std::ranges::any_of(sessions_, [&](const Session &s) { return s.view.active && gameOf(s.view.id) == game; }))
+            throw std::runtime_error(newerBuild
+                    ? "A GW2 update is available. Close this installation's game clients, then launch again."
+                    : "A previous GW2 download needs to finish. Close this installation's game clients, then launch again.");
+        wantedBuild_ = wanted;
+        updatePath_ = game;
+        updateOlder_ = newerBuild;
+        store_->updatePending(game);
+        start({}, stop);
+        return;
+    }
 }
 } // namespace gw2

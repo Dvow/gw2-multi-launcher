@@ -1,5 +1,8 @@
 name: Build and release
 
+env:
+  KX_ADVANCED_BUILDS: '1'
+
 on:
   push:
     branches: [main]
@@ -21,6 +24,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       build: ${{ steps.check.outputs.build }}
+      dev: ${{ steps.check.outputs.dev }}
+      variants: ${{ steps.check.outputs.variants }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -32,6 +37,13 @@ jobs:
           set -eu
           version=$(sed -nE 's/^project\(GW2MultiLauncher VERSION ([0-9]+\.[0-9]+\.[0-9]+) .*/\1/p' CMakeLists.txt)
           test -n "$version"
+          # Only the private repository builds the dev launcher.
+          if [ -f private/CMakePresets.json ]; then
+            echo "dev=true" >> "$GITHUB_OUTPUT"
+            echo 'variants=["main","dev"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'variants=["main"]' >> "$GITHUB_OUTPUT"
+          fi
           if [ "$GITHUB_EVENT_NAME" != "push" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -48,6 +60,23 @@ jobs:
             echo "Project version changed from ${previous:-none} to $version."
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
+  proxy-linux-integration:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Prepare isolated network tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap iproute2
+          mkdir -p "$RUNNER_TEMP/mitmproxy"
+          curl -fL --retry 3 https://downloads.mitmproxy.org/12.2.0/mitmproxy-12.2.0-linux-x86_64.tar.gz -o "$RUNNER_TEMP/mitmproxy/archive.tar.gz"
+          echo "b17e592c0c6cb9cf325213b6efff932ef595dd40b09735557b6c30cfb9e5f411  $RUNNER_TEMP/mitmproxy/archive.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/mitmproxy/archive.tar.gz" -C "$RUNNER_TEMP/mitmproxy"
+      - name: Test independent proxies, DNS, UDP and fail-closed namespaces
+        run: KX_TEST_MITMDUMP="$RUNNER_TEMP/mitmproxy/mitmdump" python3 tests/proxy_linux.py -v
+
   windows:
     needs: changes
     if: needs.changes.outputs.build == 'true'
@@ -65,50 +94,51 @@ jobs:
       - name: Build Windows installer and game helpers
         shell: pwsh
         env:
-          KX_DOWNLOAD_HEADER_VALUE: ${{ secrets.KX_DOWNLOAD_HEADER_VALUE }}
+          # Pull requests build offline and get no secrets.
+          KX_DOWNLOAD_HEADER_VALUE: ${{ github.event_name != 'pull_request' && secrets.KX_DOWNLOAD_HEADER_VALUE || '' }}
         run: |
           $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
           Import-Module "$vs/Common7/Tools/Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-          cmake --preset release
+          # Private pull requests build offline; trusted private releases require Live inputs.
+          $preset = 'release'
+          if (Test-Path private/CMakePresets.json) {
+            $preset = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') { 'kx-offline-release' } else { 'kx-live-release' }
+            if ($preset -eq 'kx-live-release') {
+              python private/scripts/ci_distribution.py
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            }
+          }
+          "GW2_BUILD=build/$preset" >> $env:GITHUB_ENV
+          cmake --preset $preset
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cmake --build --preset release
+          cmake --build --preset $preset
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ctest --preset $preset
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
+          retention-days: 1
           name: windows-installer
           path: |
-            build/release/*setup.exe
-            build/release/release-title.txt
+            ${{ env.GW2_BUILD }}/*setup.exe
+            ${{ env.GW2_BUILD }}/release-title.txt
           if-no-files-found: error
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
+          retention-days: 1
           name: native-helpers
           path: |
-            build/release/bin/*.Host.exe
-            build/release/bin/*.Native.dll
+            ${{ env.GW2_BUILD }}/bin/*.Host.exe
+            ${{ env.GW2_BUILD }}/bin/*.Native.dll
+            ${{ env.GW2_BUILD }}/bin/*.png
           if-no-files-found: error
 
-  linux:
-    needs: windows
-    runs-on: ubuntu-24.04
-    container: ubuntu:26.04
+  windows-dev:
+    needs: changes
+    if: needs.changes.outputs.build == 'true' && needs.changes.outputs.dev == 'true'
+    runs-on: windows-2025
     steps:
-      - name: Install build dependencies
-        run: |
-          printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries
-          packages="ca-certificates curl git g++ cmake ninja-build pkg-config dpkg-dev file libicu-dev libsecret-1-dev libssl-dev libcurl4-openssl-dev libgl-dev libx11-dev libxext-dev libxcursor-dev libxrandr-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev"
-          for attempt in 1 2 3 4 5; do
-            if [ "$attempt" -gt 1 ]; then
-              rm -rf /var/lib/apt/lists/*
-              sleep $((attempt * 5))
-            fi
-            if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $packages; then
-              exit 0
-            fi
-            echo "Package install failed on attempt ${attempt}"
-          done
-          exit 1
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -118,23 +148,204 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: 10.0.x
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: native-helpers
-          path: build/native
-      - name: Build Ubuntu installer
+      - name: Build dev launcher installer
+        shell: pwsh
+        env:
+          # Pull requests build offline and get no secrets.
+          KX_DOWNLOAD_HEADER_VALUE: ${{ github.event_name != 'pull_request' && secrets.KX_DOWNLOAD_HEADER_VALUE || '' }}
         run: |
-          cmake --preset release -DCMAKE_INSTALL_PREFIX=/usr -DGW2_NATIVE_DIR="$PWD/build/native"
-          cmake --build --preset release --parallel 2
+          $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
+          Import-Module "$vs/Common7/Tools/Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          # Pull requests build offline; trusted builds update from this repository's releases.
+          $preset = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') { 'dev-offline-release' } else { 'dev-live-release' }
+          if ($preset -eq 'dev-live-release') {
+            python private/scripts/ci_distribution.py
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          "GW2_BUILD=build/$preset" >> $env:GITHUB_ENV
+          cmake --preset $preset
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset $preset
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ctest --preset $preset
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: linux-installer
-          path: build/release/*_amd64.deb
+          retention-days: 1
+          name: windows-dev-installer
+          path: ${{ env.GW2_BUILD }}/*-dev-setup.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          retention-days: 1
+          name: dev-native-helpers
+          path: |
+            ${{ env.GW2_BUILD }}/bin/*.Host.exe
+            ${{ env.GW2_BUILD }}/bin/*.Native.dll
+            ${{ env.GW2_BUILD }}/bin/*.png
           if-no-files-found: error
 
+  linux:
+    needs: [changes, windows, windows-dev]
+    # windows-dev is skipped outside the private repository.
+    if: >-
+      ${{ !cancelled() && needs.windows.result == 'success' &&
+      (needs.windows-dev.result == 'success' || needs.windows-dev.result == 'skipped') }}
+    strategy:
+      matrix:
+        variant: ${{ fromJSON(needs.changes.outputs.variants) }}
+    runs-on: ubuntu-24.04
+    container: ubuntu:22.04
+    steps:
+      - name: Prepare checkout
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install portable build toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          test "$ID:$VERSION_ID:$(dpkg --print-architecture)" = ubuntu:22.04:amd64
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gnupg build-essential python3 pkg-config dpkg-dev file \
+            libsecret-1-dev libssl-dev libcurl4-openssl-dev libgl-dev libx11-dev libxext-dev libxcursor-dev libxrandr-dev \
+            libxi-dev libxfixes-dev libxss-dev libxtst-dev
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          cd "$scratch"
+          curl -fL --retry 3 https://apt.llvm.org/llvm-snapshot.gpg.key -o llvm.asc
+          fingerprint=$(gpg --show-keys --with-colons llvm.asc | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          gpg --batch --yes --dearmor -o /usr/share/keyrings/llvm.gpg llvm.asc
+          printf 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main\n' > /etc/apt/sources.list.d/llvm.list
+          apt-get update
+          apt-get install -y --no-install-recommends clang-21 clang-tools-21 lld-21 libc++-21-dev libc++abi-21-dev libunwind-21-dev
+          curl -fL --retry 3 https://github.com/Kitware/CMake/releases/download/v4.2.3/cmake-4.2.3-linux-x86_64.tar.gz -o cmake.tar.gz
+          curl -fL --retry 3 https://github.com/Kitware/CMake/releases/download/v4.2.3/cmake-4.2.3-SHA-256.txt -o cmake-sha.txt
+          expected=$(awk '$2 == "cmake-4.2.3-linux-x86_64.tar.gz" {print $1}' cmake-sha.txt)
+          test ${#expected} -eq 64
+          printf '%s  cmake.tar.gz\n' "$expected" | sha256sum -c -
+          tar -xzf cmake.tar.gz --strip-components=1 -C /usr/local
+          curl -fL --retry 3 https://github.com/ninja-build/ninja/archive/refs/tags/v1.12.1.tar.gz -o ninja.tar.gz
+          printf '821bdff48a3f683bc4bb3b6f0b5fe7b2d647cf65d52aeb63328c91a6c6df285a  ninja.tar.gz\n' | sha256sum -c -
+          tar -xzf ninja.tar.gz
+          cd ninja-1.12.1
+          python3 configure.py --bootstrap
+          install -m 755 ninja /usr/local/bin/ninja
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cpm
+          key: cpm-${{ hashFiles('CMakeLists.txt', 'cmake/CPM.cmake') }}
+          restore-keys: cpm-
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ matrix.variant == 'dev' && 'dev-native-helpers' || 'native-helpers' }}
+          path: build/native
+      - name: Build portable Debian package
+        env:
+          VARIANT: ${{ matrix.variant }}
+          # Pull requests build offline and get no secrets.
+          KX_DOWNLOAD_HEADER_VALUE: ${{ github.event_name != 'pull_request' && secrets.KX_DOWNLOAD_HEADER_VALUE || '' }}
+        run: |
+          set -eu
+          preset=release
+          if [ -f private/CMakePresets.json ]; then
+            prefix=kx
+            if [ "$VARIANT" = dev ]; then prefix=dev; fi
+            preset=$prefix-offline-release
+            if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+              preset=$prefix-live-release
+              export USERPROFILE="$HOME"
+              python3 private/scripts/ci_distribution.py
+            fi
+          fi
+          echo "GW2_BUILD=build/$preset" >> "$GITHUB_ENV"
+          cmake --preset "$preset" -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/linux-portable.cmake" -DCMAKE_INSTALL_PREFIX=/usr -DGW2_NATIVE_DIR="$PWD/build/native"
+          cmake --build --preset "$preset" --parallel 2
+          ctest --preset "$preset"
+          cmake --build "build/$preset" --target arch-payload
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          retention-days: 1
+          name: ${{ matrix.variant == 'dev' && 'linux-dev-installer' || 'linux-installer' }}
+          path: ${{ env.GW2_BUILD }}/*_amd64.deb
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          retention-days: 1
+          name: ${{ matrix.variant == 'dev' && 'arch-dev-payload' || 'arch-payload' }}
+          path: |
+            ${{ env.GW2_BUILD }}/*-linux-x86_64.tar.gz
+            ${{ env.GW2_BUILD }}/PKGBUILD
+          if-no-files-found: error
+
+  arch:
+    needs: [changes, linux]
+    if: ${{ !cancelled() && needs.linux.result == 'success' }}
+    strategy:
+      matrix:
+        variant: ${{ fromJSON(needs.changes.outputs.variants) }}
+    runs-on: ubuntu-24.04
+    container: archlinux:base
+    steps:
+      - name: Prepare packaging tools
+        run: pacman -Syu --noconfirm --needed base-devel git
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ matrix.variant == 'dev' && 'arch-dev-payload' || 'arch-payload' }}
+          path: build/arch
+      - name: Build and test pacman package
+        run: |
+          useradd --create-home builder
+          install -d -o builder -g builder /tmp/arch-package
+          cp build/arch/* /tmp/arch-package/
+          chown -R builder:builder /tmp/arch-package
+          cd /tmp/arch-package
+          runuser -u builder -- env PKGEXT=.pkg.tar.zst makepkg --nodeps --clean
+          cd "$GITHUB_WORKSPACE"
+          cp /tmp/arch-package/*.pkg.tar.zst build/arch/
+          bash tests/linux_package.sh build/arch/*.pkg.tar.zst
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          retention-days: 1
+          name: ${{ matrix.variant == 'dev' && 'arch-dev-installer' || 'arch-installer' }}
+          path: build/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  linux-compatibility:
+    needs: [changes, linux]
+    if: ${{ !cancelled() && needs.linux.result == 'success' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: ['ubuntu:22.04', 'ubuntu:24.04', 'ubuntu:26.04', 'debian:12', 'debian:13']
+        variant: ${{ fromJSON(needs.changes.outputs.variants) }}
+    container: ${{ matrix.distro }}
+    steps:
+      - name: Prepare checkout
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ matrix.variant == 'dev' && 'linux-dev-installer' || 'linux-installer' }}
+          path: package
+      - name: Install and open with a fresh user
+        run: bash tests/linux_package.sh package/*_amd64.deb
+
   release:
-    needs: [windows, linux]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [windows, windows-dev, linux, linux-compatibility, arch, proxy-linux-integration]
+    # windows-dev is skipped outside the private repository.
+    if: >-
+      ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.windows.result == 'success' && needs.linux.result == 'success' &&
+      needs.proxy-linux-integration.result == 'success' &&
+      needs.linux-compatibility.result == 'success' && needs.arch.result == 'success' &&
+      (needs.windows-dev.result == 'success' || needs.windows-dev.result == 'skipped') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -181,12 +392,40 @@ jobs:
               --title "$product $tag" --generate-notes
           fi
           shopt -s nullglob
-          setups=(build/release/*setup.exe)
-          debs=(build/release/*_amd64.deb)
-          if [ "${#setups[@]}" -ne 1 ] || [ "${#debs[@]}" -ne 1 ]; then
-            echo "Expected one setup and one deb." >&2
+          setups=() debs=() archs=() devs=()
+          for file in build/release/*setup.exe build/release/*_amd64.deb build/release/*.pkg.tar.zst; do
+            case "${file##*/}" in
+              *-dev-setup.exe | *-dev_amd64.deb | *-dev-*.pkg.tar.zst) devs+=("$file") ;;
+              *setup.exe) setups+=("$file") ;;
+              *.deb) debs+=("$file") ;;
+              *) archs+=("$file") ;;
+            esac
+          done
+          # The private repository also attaches the dev launcher's three packages; they never go to R2.
+          expected_devs=0
+          if [ -f private/CMakePresets.json ]; then expected_devs=3; fi
+          if [ "${#setups[@]}" -ne 1 ] || [ "${#debs[@]}" -ne 1 ] || [ "${#archs[@]}" -ne 1 ] ||
+              [ "${#devs[@]}" -ne "$expected_devs" ]; then
+            echo "Expected one Windows setup, one Debian package, one Arch package and $expected_devs dev packages." >&2
             exit 1
           fi
-          gh release upload "$tag" "${setups[0]}" "${debs[0]}" --clobber
+          gh release upload "$tag" "${setups[0]}" "${debs[0]}" "${archs[0]}" "${devs[@]}" --clobber
+          if [ "${#devs[@]}" -gt 0 ]; then
+            # Dev launchers update through git, so only PCs that can fetch this repository
+            # get these packages. Normal clones never fetch these refs.
+            ref="refs/kx-dev-launcher/$version"
+            entries=()
+            for dev in "${devs[@]}"; do
+              entries+=("$(printf '100644 blob %s\t%s' "$(git hash-object -w --no-filters "$dev")" "${dev##*/}")")
+            done
+            tree=$(printf '%s\n' "${entries[@]}" | git mktree)
+            commit=$(git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit-tree "$tree" -m "$product Dev $version")
+            git push --force origin "$commit:$ref"
+            published=$(git ls-remote --refs origin 'refs/kx-dev-launcher/*')
+            for old in $(printf '%s\n' "$published" | cut -f2); do
+              if [ "$old" != "$ref" ]; then git push origin --delete "$old"; fi
+            done
+          fi
           publish_metadata
           gh release edit "$tag" --title "$product $tag" --target "$GITHUB_SHA" --draft=false --latest

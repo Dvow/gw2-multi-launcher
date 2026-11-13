@@ -23,7 +23,9 @@ int main(int argc, char **argv) {
         SetCurrentProcessExplicitAppUserModelID(L"" GW2_APP_ID);
 #endif
         gw2::clearParkedFiles();
-        if (gw2::run() == 3) gw2::relaunchUpdatedApp();
+        const auto result = gw2::run();
+        if (result == 3) gw2::relaunchUpdatedApp();
+        if (result == 4) gw2::relaunchApp();
         return 0;
     } catch (const std::exception &error) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, gw2ProductName(), error.what(), nullptr);

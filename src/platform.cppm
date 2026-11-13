@@ -22,6 +22,9 @@ module;
 #include <bcrypt.h>
 #include <winhttp.h>
 #include <shlobj.h>
+#include <shellapi.h>
+#include <tlhelp32.h>
+#include "../native/process_exit.hpp"
 #else
 #include <fcntl.h>
 #include <sys/file.h>
@@ -590,12 +593,41 @@ class Process {
     }
 };
 
+#ifdef _WIN32
+// Opens a WinHTTP session routed by what the player entered in Windows' proxy settings: a setup
+// script keeps Windows' own handling (WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY), a proxy server is
+// used as given, and with neither the session connects directly, as the game does.
+// Without an entered script the automatic type must not be used: it runs proxy discovery
+// ("Automatically detect settings", ticked by default), and on a network whose discovered
+// script named a proxy that did not answer, every request timed out (error 12002) although a
+// direct connection worked. With a script entered, Windows still runs discovery first when
+// that box is ticked.
+inline HINTERNET openHttpSession(const wchar_t *agent) {
+    WINHTTP_CURRENT_USER_IE_PROXY_CONFIG entered{};
+    if (!WinHttpGetIEProxyConfigForCurrentUser(&entered)) entered = {};
+    const auto set = [](const wchar_t *text) { return text && *text; };
+    const auto session =
+        set(entered.lpszAutoConfigUrl)
+            ? WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)
+        : set(entered.lpszProxy)
+            ? WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_NAMED_PROXY, entered.lpszProxy,
+                  set(entered.lpszProxyBypass) ? entered.lpszProxyBypass : WINHTTP_NO_PROXY_BYPASS, 0)
+            : WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    const auto error = GetLastError();
+    for (const auto text : {entered.lpszAutoConfigUrl, entered.lpszProxy, entered.lpszProxyBypass})
+        if (text) GlobalFree(text);
+    SetLastError(error);
+    return session;
+}
+#endif
+
 struct HttpHeader {
     std::string name, value;
 };
 struct HttpOptions {
     std::span<const HttpHeader> headers{};
     std::span<const std::string_view> responseHeaders{};
+    bool plain{}; // Plain HTTP, only for a public record whose host has no HTTPS.
 };
 struct HttpReply {
     unsigned status{};
@@ -630,10 +662,9 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
             if (value) WinHttpCloseHandle(value);
         }
     };
-    Internet session{WinHttpOpen(L"GW2MultiLauncher/" GW2_APP_VERSION,
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
+    Internet session{openHttpSession(L"GW2MultiLauncher/" GW2_APP_VERSION)};
     if (!session.value) throw std::runtime_error("Could not open a secure connection.");
-    if (!WinHttpSetTimeouts(session.value, 3000, 3000, 3000, 5000))
+    if (!WinHttpSetTimeouts(session.value, 8000, 10000, 10000, 15000))
         throw std::runtime_error("Could not set the secure connection timeouts.");
     auto server = utf16(host), route = utf16(resource);
     std::string headerText;
@@ -649,10 +680,10 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
     auto headers = utf16(headerText);
     wipe(headerText.data(), headerText.size());
     Internet connection{WinHttpConnect(session.value, reinterpret_cast<const wchar_t *>(server.bytes.data()),
-        INTERNET_DEFAULT_HTTPS_PORT, 0)};
+        options.plain ? INTERNET_DEFAULT_HTTP_PORT : INTERNET_DEFAULT_HTTPS_PORT, 0)};
     Internet request{connection.value ? WinHttpOpenRequest(connection.value, body.empty() ? L"GET" : L"POST",
                                             reinterpret_cast<const wchar_t *>(route.bytes.data()), nullptr,
-                                            nullptr, nullptr, WINHTTP_FLAG_SECURE)
+                                            nullptr, nullptr, options.plain ? 0 : WINHTTP_FLAG_SECURE)
                                       : nullptr};
     DWORD policy = download ? WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP
                             : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
@@ -665,8 +696,13 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
         !WinHttpSendRequest(request.value, reinterpret_cast<const wchar_t *>(headers.bytes.data()),
             static_cast<DWORD>(headers.bytes.size() / 2 - 1), const_cast<char *>(body.data()),
             static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0) ||
-        !WinHttpReceiveResponse(request.value, nullptr))
-        throw std::runtime_error("Could not reach the service. Check your connection and try again.");
+        !WinHttpReceiveResponse(request.value, nullptr)) {
+        // The code tells a name that does not resolve (12007) from a refused or silent
+        // connection (12029, 12002) and a certificate that is not trusted (12175).
+        const auto error = GetLastError();
+        throw std::runtime_error("Could not reach the service (Windows error " + std::to_string(error) +
+            "). Check your connection and try again.");
+    }
     DWORD status{}, size = sizeof(status);
     if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr,
             &status, &size, nullptr))
@@ -689,7 +725,7 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
                 {reinterpret_cast<const unsigned char *>(value.data()), bytes + sizeof(wchar_t)})});
         }
     }
-    const auto deadline = SDL_GetTicks() + (download ? 600000 : 10000);
+    const auto deadline = SDL_GetTicks() + (download ? 600000 : 30000);
     Secret buffer(16384);
     for (;;) {
         cancelled(stop);
@@ -705,7 +741,7 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
 #else
     auto curl = std::unique_ptr<CURL, decltype(&curl_easy_cleanup)>(curl_easy_init(), curl_easy_cleanup);
     if (!curl) throw std::runtime_error("Could not open a secure connection.");
-    const auto url = "https://" + std::string(host) + std::string(resource);
+    const auto url = (options.plain ? "http://" : "https://") + std::string(host) + std::string(resource);
     curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
     struct Headers {
         curl_slist *value{};
@@ -734,11 +770,15 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
         curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
     }
     curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "GW2MultiLauncher/" GW2_APP_VERSION);
-    curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 3L);
-    curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, download ? 600L : 15L);
+    curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, download ? 600L : 30L);
     curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, download ? 1L : 0L);
     curl_easy_setopt(curl.get(), CURLOPT_MAXREDIRS, 5L);
+#if LIBCURL_VERSION_NUM >= 0x075500
     curl_easy_setopt(curl.get(), CURLOPT_REDIR_PROTOCOLS_STR, "https");
+#else
+    curl_easy_setopt(curl.get(), CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+#endif
     curl_easy_setopt(curl.get(), CURLOPT_NOSIGNAL, 1L);
     struct Output {
         Bytes &bytes;
@@ -798,8 +838,9 @@ HttpReply https(std::string_view host, std::string_view resource, std::string_vi
             return static_cast<std::stop_token *>(context)->stop_requested() ? 1 : 0;
         });
     curl_easy_setopt(curl.get(), CURLOPT_XFERINFODATA, &stop);
-    if (curl_easy_perform(curl.get()) != CURLE_OK)
-        throw std::runtime_error("Could not reach the service. Check your connection and try again.");
+    if (const auto result = curl_easy_perform(curl.get()); result != CURLE_OK)
+        throw std::runtime_error("Could not reach the service (curl error " + std::to_string(static_cast<int>(result)) +
+            "). Check your connection and try again.");
     long status{};
     curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
     reply.status = static_cast<unsigned>(status);
@@ -825,8 +866,14 @@ std::string sha256(std::span<const unsigned char> bytes) {
     }
     return result;
 }
-std::string latestBuild(std::stop_token stop) {
-    auto reply = https("api.guildwars2.com", "/v2/build", {}, {}, stop);
+// The record GW2's own patcher compares its build with (`/latest64/<program>`, no-cache) on
+// the executable's own asset host (Image::patchHost). The public API's /v2/build lagged a
+// release (2026-10-13, build 208574). The asset hosts have no valid HTTPS certificate; the
+// game reads them over HTTP as well.
+std::string latestBuild(const PatchHost &patch, std::stop_token stop) {
+    const HttpHeader noCache[]{{"Cache-Control", "no-cache"}};
+    auto reply = https(patch.host, patch.latest, {}, {}, stop, 1024,
+        {.headers = noCache, .plain = true});
     if (reply.status != 200)
         throw std::runtime_error("The GW2 update service is unavailable. Try again shortly.");
     return std::string(reply.body.text());
@@ -877,7 +924,9 @@ bool endLaunchedGame(unsigned pid, std::uint64_t started) {
     if (!process.value) return GetLastError() == ERROR_INVALID_PARAMETER;
     if (WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0) return true;
     if (!isGw2(process.value) || processStarted(process.value) != started) return false;
-    return TerminateProcess(process.value, 1) || WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0;
+    if (!TerminateProcess(process.value, 1)) return WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0;
+    gw2_exit::hasten(pid);
+    return true;
 }
 struct GameWindows {
     DWORD pid{};
@@ -908,9 +957,64 @@ void showLaunchedGame(unsigned pid, std::uint64_t started) {
     ShowWindowAsync(target, IsIconic(target) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(target);
 }
+// Matched by full image path, so a program already open, or started for an earlier
+// account, is not started twice. A same-named process this launcher cannot query
+// counts as running.
+bool programRunning(const std::filesystem::path &program) {
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W entry{sizeof(entry)};
+    bool found = false;
+    for (BOOL more = Process32FirstW(snapshot, &entry); more && !found; more = Process32NextW(snapshot, &entry)) {
+        if (_wcsicmp(entry.szExeFile, program.filename().c_str())) continue;
+        ProcessHandle process(entry.th32ProcessID, PROCESS_QUERY_LIMITED_INFORMATION);
+        wchar_t image[32768]{};
+        DWORD length = 32767;
+        std::error_code error;
+        found = !process.value || (QueryFullProcessImageNameW(process.value, 0, image, &length) &&
+                                      std::filesystem::equivalent(std::filesystem::path(image), program, error));
+    }
+    CloseHandle(snapshot);
+    return found;
+}
+// Starts each program that is not running, from its own folder. It is not tied to the
+// launcher, so it stays open when the launcher closes, and it gets the launcher's
+// rights, the same as the game. Returns the first failure, or empty.
+std::string startPrograms(const std::vector<std::string> &programs) {
+    std::string failure;
+    for (const auto &program : programs) {
+        const auto file = path(program);
+        if (programRunning(file)) continue;
+        std::wstring command = L"\"" + file.wstring() + L"\"";
+        const auto folder = file.parent_path().wstring();
+        STARTUPINFOW startup{sizeof(startup)};
+        PROCESS_INFORMATION info{};
+        if (CreateProcessW(file.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, folder.c_str(),
+                &startup, &info)) {
+            CloseHandle(info.hThread);
+            CloseHandle(info.hProcess);
+            continue;
+        }
+        auto error = GetLastError();
+        if (error == ERROR_ELEVATION_REQUIRED) {
+            // The program asks for administrator rights: let Windows show its prompt.
+            SHELLEXECUTEINFOW shell{sizeof(shell)};
+            shell.fMask = SEE_MASK_NOASYNC;
+            shell.lpFile = file.c_str();
+            shell.lpDirectory = folder.c_str();
+            shell.nShow = SW_SHOWNORMAL;
+            if (ShellExecuteExW(&shell)) continue;
+            error = GetLastError();
+        }
+        if (failure.empty())
+            failure = "Could not start " + utf8(file.filename()) + " (error " + std::to_string(error) + ").";
+    }
+    return failure;
+}
 #else
 LaunchedGame launchedGame(unsigned) { return {}; }
 bool endLaunchedGame(unsigned, std::uint64_t) { return false; }
 void showLaunchedGame(unsigned, std::uint64_t) {}
+std::string startPrograms(const std::vector<std::string> &) { return {}; }
 #endif
 } // namespace gw2

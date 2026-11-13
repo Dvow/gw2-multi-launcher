@@ -1,3 +1,7 @@
+if(NOT GW2_BUILD_PACKAGES)
+  return()
+endif()
+
 if(NOT WIN32 AND CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
   set(CMAKE_INSTALL_PREFIX /usr CACHE PATH "Installation prefix" FORCE)
 endif()
@@ -37,6 +41,7 @@ if(NOT GW2_DEB_FILE_NAME)
   set(GW2_DEB_FILE_NAME "gw2-multi-launcher_${PROJECT_VERSION}_amd64")
 endif()
 set(setup_dependencies gw2-multi-launcher ${native_targets} ${steam_setup_depends}
+  proxy/kx_proxy.py proxy/kx_proxy_pipe.py proxy/kx_proxy_linux.py proxy/kx_proxy_tun.py
   src/icons/gw2-multi-launcher.png ${GW2_SETUP_DEPENDS})
 
 if(WIN32)
@@ -46,17 +51,32 @@ if(WIN32)
   file(REMOVE "${CMAKE_BINARY_DIR}/ThirdPartyNotices.txt")
   install(TARGETS gw2-multi-launcher ${native_targets} RUNTIME DESTINATION . LIBRARY DESTINATION .)
   install(PROGRAMS "${GW2_STEAM_EXECUTABLE}" DESTINATION .)
+  install(FILES proxy/kx_proxy.py proxy/kx_proxy_pipe.py DESTINATION .)
   set(innosetup_dir "${CMAKE_SOURCE_DIR}/build/tools/Inno Setup 7")
-  if(DEFINED CACHE{GW2_ISCC} AND NOT EXISTS "${GW2_ISCC}")
-    unset(GW2_ISCC CACHE)
+  # The setup script needs Inno Setup 7 (ApplyPathRedirRules for the C++ runtime
+  # check). GitHub's Windows runners ship Inno Setup 6, which must not be picked up;
+  # without a 7 compiler the pinned 7.1.0 is fetched.
+  function(gw2_iscc_is_7 result candidate)
+    execute_process(COMMAND "${candidate}" /? OUTPUT_VARIABLE banner ERROR_VARIABLE banner
+      RESULT_VARIABLE ignored TIMEOUT 30)
+    if(NOT banner MATCHES "Inno Setup 7")
+      set(${result} FALSE PARENT_SCOPE)
+    endif()
+  endfunction()
+  if(DEFINED CACHE{GW2_ISCC})
+    set(cached_7 TRUE)
+    if(EXISTS "${GW2_ISCC}")
+      gw2_iscc_is_7(cached_7 "${GW2_ISCC}")
+    endif()
+    if(NOT EXISTS "${GW2_ISCC}" OR NOT cached_7)
+      unset(GW2_ISCC CACHE)
+    endif()
   endif()
-  find_program(GW2_ISCC NAMES ISCC.exe ISCC HINTS
+  find_program(GW2_ISCC NAMES ISCC.exe ISCC VALIDATOR gw2_iscc_is_7 HINTS
     "${innosetup_dir}"
     "$ENV{LOCALAPPDATA}/GW2MultiLauncher-BuildTools/Inno Setup 7"
     "$ENV{ProgramFiles}/Inno Setup 7"
-    "$ENV{ProgramFiles}/Inno Setup 6"
-    "$ENV{ProgramFiles\(x86\)}/Inno Setup 7"
-    "$ENV{ProgramFiles\(x86\)}/Inno Setup 6")
+    "$ENV{ProgramFiles\(x86\)}/Inno Setup 7")
   if(NOT GW2_ISCC)
     gw2_fetch_innosetup("${innosetup_dir}")
     set(GW2_ISCC "${innosetup_dir}/ISCC.exe" CACHE FILEPATH "Path to ISCC.exe" FORCE)
@@ -97,6 +117,8 @@ Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.png"; DestDir: "{ap
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.Host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/@GW2_PROGRAM_FILE@.Native.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "@GW2_STEAM_EXECUTABLE@"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/kx_proxy.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@CMAKE_RUNTIME_OUTPUT_DIRECTORY@/kx_proxy_pipe.py"; DestDir: "{app}"; Flags: ignoreversion
 @GW2_SETUP_FILES@
 
 [InstallDelete]
@@ -251,6 +273,26 @@ end;
     DEPENDS ${setup_dependencies} "${CMAKE_BINARY_DIR}/setup.iss" "${CMAKE_BINARY_DIR}/icon.ico"
     COMMENT "Building Windows installer" VERBATIM)
 else()
+  if(NOT GW2_LINUX_PACKAGE_NAME)
+    set(GW2_LINUX_PACKAGE_NAME gw2-multi-launcher)
+  endif()
+  if(NOT GW2_PACKAGE_README)
+    set(GW2_PACKAGE_README "${CMAKE_SOURCE_DIR}/docs/README.md")
+  endif()
+  # Application runtime files use the same path in Debian and Arch packages.
+  set(linux_install_dir "lib/${GW2_LINUX_PACKAGE_NAME}")
+  if(EXISTS /etc/arch-release)
+    set(default_package_format ARCH)
+  else()
+    set(default_package_format DEB)
+  endif()
+  set(GW2_LINUX_PACKAGE_FORMAT "${default_package_format}" CACHE STRING "Linux package format: DEB or ARCH")
+  set_property(CACHE GW2_LINUX_PACKAGE_FORMAT PROPERTY STRINGS DEB ARCH)
+  if(NOT GW2_LINUX_PACKAGE_FORMAT MATCHES "^(DEB|ARCH)$")
+    message(FATAL_ERROR "GW2_LINUX_PACKAGE_FORMAT must be DEB or ARCH")
+  endif()
+  set(linux_command "${CMAKE_BINARY_DIR}/${GW2_LINUX_PACKAGE_NAME}")
+  set(linux_desktop "${linux_command}.desktop")
   set(notices "${CMAKE_BINARY_DIR}/ThirdPartyNotices.txt")
   file(WRITE "${notices}" "GW2 Multi Launcher third-party notices\n\n")
   foreach(license "${SDL3_SOURCE_DIR}/LICENSE.txt" "${imgui_SOURCE_DIR}/LICENSE.txt" "${json_SOURCE_DIR}/LICENSE.MIT" "${minhook_SOURCE_DIR}/LICENSE.txt")
@@ -269,21 +311,39 @@ else()
   string(FIND "${qr_license}" "*/" qr_end)
   string(SUBSTRING "${qr_license}" 0 "${qr_end}" qr_notice)
   file(APPEND "${notices}" "\nQR Code generator\n${qr_notice}*/\n")
-  find_program(DPKG_SHLIBDEPS_EXECUTABLE dpkg-shlibdeps REQUIRED)
-  install(TARGETS gw2-multi-launcher RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  install(PROGRAMS "${GW2_STEAM_EXECUTABLE}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  install(FILES "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  install(PROGRAMS "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Host.exe" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  install(FILES "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Native.dll" DESTINATION ${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher)
-  file(WRITE "${CMAKE_BINARY_DIR}/gw2-multi-launcher" "#!/bin/sh\nexec \"${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/gw2-multi-launcher/${GW2_PROGRAM_FILE}\" \"$@\"\n")
-  install(PROGRAMS "${CMAKE_BINARY_DIR}/gw2-multi-launcher" DESTINATION ${CMAKE_INSTALL_BINDIR})
-  file(WRITE "${CMAKE_BINARY_DIR}/gw2-multi-launcher.desktop"
-    "[Desktop Entry]\nType=Application\nName=${GW2_PRODUCT_NAME}\nComment=Launch your Anet accounts\nExec=gw2-multi-launcher\nIcon=gw2-multi-launcher\nTerminal=false\nCategories=Game;\nStartupWMClass=${GW2_PROGRAM_FILE}\n")
-  install(FILES "${CMAKE_BINARY_DIR}/gw2-multi-launcher.desktop" DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
-  install(FILES src/icons/gw2-multi-launcher.png DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps)
-  install(FILES docs/README.md LICENSE "${notices}" DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/gw2-multi-launcher)
-  set(CPACK_GENERATOR DEB)
-  set(CPACK_PACKAGE_NAME gw2-multi-launcher)
+  if(GW2_STATIC_LIBCXX_NOTICES)
+    file(READ "${GW2_STATIC_LIBCXX_NOTICES}" libcxx_notice)
+    file(APPEND "${notices}" "\nStatically linked LLVM libc++ / libc++abi\n${libcxx_notice}\n${apache}\n")
+  endif()
+  install(TARGETS gw2-multi-launcher RUNTIME DESTINATION ${linux_install_dir})
+  file(WRITE "${CMAKE_BINARY_DIR}/package-format" "${GW2_LINUX_PACKAGE_FORMAT}\n")
+  install(FILES "${CMAKE_BINARY_DIR}/package-format" DESTINATION ${linux_install_dir})
+  install(FILES proxy/kx_proxy.py proxy/kx_proxy_linux.py proxy/kx_proxy_tun.py DESTINATION ${linux_install_dir})
+  install(PROGRAMS "${GW2_STEAM_EXECUTABLE}" DESTINATION ${linux_install_dir})
+  install(FILES "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png" DESTINATION ${linux_install_dir})
+  install(PROGRAMS "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Host.exe" DESTINATION ${linux_install_dir})
+  install(FILES "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Native.dll" DESTINATION ${linux_install_dir})
+  if(IS_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/net")
+    install(DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/net/"
+      DESTINATION "${linux_install_dir}/net"
+      FILES_MATCHING PATTERN "*.dll")
+  endif()
+  file(WRITE "${linux_command}" "#!/bin/sh\nexec \"${CMAKE_INSTALL_PREFIX}/${linux_install_dir}/${GW2_PROGRAM_FILE}\" \"$@\"\n")
+  install(PROGRAMS "${linux_command}" DESTINATION ${CMAKE_INSTALL_BINDIR})
+  file(WRITE "${linux_desktop}"
+    "[Desktop Entry]\nType=Application\nName=${GW2_PRODUCT_NAME}\nComment=Launch your Anet accounts\nExec=${GW2_LINUX_PACKAGE_NAME}\nIcon=${GW2_LINUX_PACKAGE_NAME}\nTerminal=false\nCategories=Game;\nStartupWMClass=${GW2_PROGRAM_FILE}\n")
+  install(FILES "${linux_desktop}" DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+  install(FILES "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps RENAME "${GW2_LINUX_PACKAGE_NAME}.png")
+  install(FILES "${GW2_PACKAGE_README}" LICENSE "${notices}" DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/${GW2_LINUX_PACKAGE_NAME})
+  if(GW2_LINUX_PACKAGE_FORMAT STREQUAL "DEB")
+    find_program(DPKG_SHLIBDEPS_EXECUTABLE dpkg-shlibdeps REQUIRED)
+    set(CPACK_GENERATOR DEB)
+  else()
+    find_program(MAKEPKG_EXECUTABLE makepkg REQUIRED)
+    set(CPACK_GENERATOR TGZ)
+  endif()
+  set(CPACK_PACKAGE_NAME "${GW2_LINUX_PACKAGE_NAME}")
   set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
   set(CPACK_PACKAGE_CONTACT "GW2 Multi Launcher contributors")
   set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Compact native Guild Wars 2 account launcher")
@@ -292,21 +352,57 @@ else()
   set(CPACK_PACKAGING_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
   set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE amd64)
   set(CPACK_DEBIAN_PACKAGE_SECTION games)
+  set(CPACK_DEBIAN_PACKAGE_RELEASE 4)
   set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsecret-1-0, libgl1, libx11-6, libxcursor1, libxrandr2, libxi6, libxfixes3, libxss1, libxtst6, xwayland, pkexec")
-  set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "gnome-keyring")
+  if(NOT DEFINED GW2_PACKAGE_UPDATES)
+    set(GW2_PACKAGE_UPDATES ON)
+  endif()
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsecret-1-0, libgl1, libx11-6, libxcursor1, libxrandr2, libxi6, libxfixes3, libxss1, libxtst6")
+  if(GW2_PACKAGE_UPDATES)
+    string(APPEND CPACK_DEBIAN_PACKAGE_DEPENDS ", pkexec | policykit-1")
+  endif()
+  set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "gnome-keyring, xwayland, xdg-desktop-portal, zenity")
+  set(CPACK_DEBIAN_PACKAGE_SUGGESTS "umu-launcher | wine, mitmproxy (>= 12.2), bubblewrap, iproute2, python3")
   set(CPACK_STRIP_FILES ON)
-  set(setup_file "${CMAKE_BINARY_DIR}/${CPACK_PACKAGE_FILE_NAME}.deb")
   include(CPack)
-  add_custom_command(OUTPUT "${setup_file}"
-    COMMAND "${CMAKE_CPACK_COMMAND}" --config "${CMAKE_BINARY_DIR}/CPackConfig.cmake" -C "${CMAKE_BUILD_TYPE}"
-    DEPENDS ${setup_dependencies} "${CMAKE_BINARY_DIR}/CPackConfig.cmake" "${CMAKE_BINARY_DIR}/cmake_install.cmake"
-      "${CMAKE_BINARY_DIR}/gw2-multi-launcher" "${CMAKE_BINARY_DIR}/gw2-multi-launcher.desktop"
-      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Host.exe"
-      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Native.dll"
-      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png"
+  set(linux_package_dependencies ${setup_dependencies}
+    "${CMAKE_BINARY_DIR}/CPackConfig.cmake" "${CMAKE_BINARY_DIR}/cmake_install.cmake"
+    "${linux_command}" "${linux_desktop}" "${GW2_PACKAGE_README}" "${notices}" "${CMAKE_BINARY_DIR}/package-format"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Host.exe"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.Native.dll"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png")
+  set(arch_payload_name "${GW2_LINUX_PACKAGE_NAME}-${PROJECT_VERSION}-linux-x86_64")
+  set(arch_payload "${CMAKE_BINARY_DIR}/${arch_payload_name}.tar.gz")
+  set(arch_extra_dependencies "")
+  if(GW2_PACKAGE_UPDATES)
+    set(arch_extra_dependencies "'polkit'")
+  endif()
+  configure_file(cmake/ArchPKGBUILD.in "${CMAKE_BINARY_DIR}/PKGBUILD.in" @ONLY)
+  add_custom_command(OUTPUT "${arch_payload}" "${CMAKE_BINARY_DIR}/PKGBUILD"
+    COMMAND "${CMAKE_CPACK_COMMAND}" --config "${CMAKE_BINARY_DIR}/CPackConfig.cmake"
+      -G TGZ -D "CPACK_PACKAGE_FILE_NAME=${arch_payload_name}" -D CPACK_INCLUDE_TOPLEVEL_DIRECTORY=OFF
+    COMMAND "${CMAKE_COMMAND}" "-DPAYLOAD=${arch_payload}"
+      "-DTEMPLATE=${CMAKE_BINARY_DIR}/PKGBUILD.in" "-DOUTPUT=${CMAKE_BINARY_DIR}/PKGBUILD"
+      -P "${CMAKE_SOURCE_DIR}/cmake/WriteArchRecipe.cmake"
+    DEPENDS ${linux_package_dependencies} "${CMAKE_BINARY_DIR}/PKGBUILD.in" cmake/WriteArchRecipe.cmake
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    COMMENT "Building Debian package" VERBATIM)
+    COMMENT "Preparing Arch package files" VERBATIM)
+  add_custom_target(arch-payload DEPENDS "${arch_payload}" "${CMAKE_BINARY_DIR}/PKGBUILD")
+  if(GW2_LINUX_PACKAGE_FORMAT STREQUAL "ARCH")
+    set(setup_file "${CMAKE_BINARY_DIR}/${GW2_LINUX_PACKAGE_NAME}-${PROJECT_VERSION}-1-x86_64.pkg.tar.zst")
+    add_custom_command(OUTPUT "${setup_file}"
+      COMMAND "${CMAKE_COMMAND}" -E env PKGEXT=.pkg.tar.zst "${MAKEPKG_EXECUTABLE}" --force --clean
+      DEPENDS "${arch_payload}" "${CMAKE_BINARY_DIR}/PKGBUILD"
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      COMMENT "Building Arch package (run as a regular user)" VERBATIM)
+  else()
+    set(setup_file "${CMAKE_BINARY_DIR}/${CPACK_PACKAGE_FILE_NAME}.deb")
+    add_custom_command(OUTPUT "${setup_file}"
+      COMMAND "${CMAKE_CPACK_COMMAND}" --config "${CMAKE_BINARY_DIR}/CPackConfig.cmake" -C "${CMAKE_BUILD_TYPE}"
+      DEPENDS ${linux_package_dependencies}
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      COMMENT "Building Debian package" VERBATIM)
+  endif()
 endif()
 
 add_custom_target(setup ALL DEPENDS "${setup_file}")

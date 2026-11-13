@@ -5,6 +5,7 @@ module;
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -15,18 +16,28 @@ export module game;
 
 export namespace gw2 {
 using Bytes = std::vector<unsigned char>;
+// The game location cannot launch; the UI offers installation repair beside the action.
 struct GamePathRequired : std::runtime_error {
-    GamePathRequired() : std::runtime_error("Select your installed Gw2-64.exe in Settings.") {}
+    explicit GamePathRequired(const std::string &problem = "Choose your Gw2-64.exe.") : std::runtime_error(problem) {}
 };
 struct Anchor {
     std::uint32_t rva{}, size{};
     std::array<unsigned char, 128> bytes{};
 };
+// Where an executable's own patcher reads the current build: ArenaNet's asset host for the
+// global client, KongZhong's for the China client (ArenaNet's China branch, its own builds).
+struct PatchHost {
+    std::string_view host, latest;
+    bool china{};
+};
 struct Layout {
     std::uint32_t timestamp{}, imageSize{}, build{}, context{}, contextTable{}, login{};
     std::uint32_t launcher{}, launcherTable{}, connection{}, play{}, tokenLogin{}, tokenSubmit{},
         preferences{};
-    std::array<Anchor, 26> anchors{};
+    // GW2's own Steam start (Steam layouts only; zero when a build changed it): the Gw2.dat
+    // file of steam_api64.dll, its setter (anchor 26), the start itself (27) and their caller (28).
+    std::uint32_t steamApiFile{};
+    std::array<Anchor, 29> anchors{};
 };
 
 // PE addresses are checked against file sections before they become an offset.
@@ -108,6 +119,16 @@ class Image {
     }
     std::uint32_t find(std::string_view text) const {
         return find(text, [](std::uint32_t) { return true; });
+    }
+    // A NUL-terminated string in the executable's data sections.
+    bool hasString(std::string_view text) const {
+        for (const auto &s : sections_) {
+            if (s.flags & 0x20000000u) continue;
+            const auto *begin = bytes_.data() + s.raw, *end = begin + s.size;
+            for (auto *at = begin; (at = std::search(at, end, text.begin(), text.end())) != end; ++at)
+                if (at + text.size() < end && !at[text.size()]) return true;
+        }
+        return false;
     }
     std::uint32_t relative(std::uint32_t instruction, unsigned operand, unsigned length) const {
         auto value = static_cast<std::int64_t>(instruction) + length +
@@ -263,6 +284,36 @@ class Image {
         anchor(result, 24, verify, 11);
         anchor(result, 25, challenge, 128);
     }
+    // GW2's own Steam start, which its own Steam sign-in runs before it asks for a ticket
+    // (LauncherCoherent.cpp): set the Gw2.dat file of steam_api64.dll, then unpack and load
+    // that DLL and call SteamAPI_Init (app 1284210). The overlay, Steam wallet purchases and
+    // Steam Input need it; the sign-in does not.
+    void resolveSteam(Layout &result) const {
+        const auto site = find("48 8D 0D ? ? ? ? E8 ? ? ? ? B9 72 98 13 00 E8 ? ? ? ? 85 C0");
+        const auto file = relative(site, 3, 7), setter = relative(site + 7, 1, 5),
+                   start = relative(site + 17, 1, 5);
+        require(matches(setter, "48 89 0D ? ? ? ? C3"));
+        require(matches(start,
+            "48 83 EC 28 48 83 3D ? ? ? ? 00 75 2F 48 8B 0D ? ? ? ? 48 85 C9 74 23 4C 8D 0D ? ? ? ? "
+            "4C 8D 05 ? ? ? ? 48 8D 15 ? ? ? ? E8 ? ? ? ? 85 C0 75 05 48 83 C4 28 C3 8B 0D ? ? ? ? "
+            "85 C9 75 1C 33 D2 48 8D 0D ? ? ? ? FF 15 ? ? ? ? 33 C9 85 C0 0F 94 C1 89 0D ? ? ? ? "
+            "8B C1 48 83 C4 28 C3"));
+        // The setter fills the file the start reads; the start loads the DLL once and keeps
+        // SteamAPI_Init's result.
+        require(relative(setter, 3, 7) == relative(start + 14, 3, 7) &&
+            relative(start + 4, 3, 8) == relative(start + 26, 3, 7) &&
+            relative(start + 61, 2, 6) == relative(start + 93, 2, 6));
+        constexpr char16_t library[] = u"steam_api64.dll";
+        require(!std::memcmp(bytes_.data() + raw(relative(start + 40, 3, 7), sizeof(library)), library,
+            sizeof(library)));
+        // A Gw2.dat file name: two characters and a terminator.
+        const auto name = raw(file, 6);
+        require(read<std::uint16_t>(name) && read<std::uint16_t>(name + 2) && !read<std::uint16_t>(name + 4));
+        anchor(result, 26, setter, 8);
+        anchor(result, 27, start, 106);
+        anchor(result, 28, site, 24);
+        result.steamApiFile = file;
+    }
 
   public:
     explicit Image(const std::filesystem::path &path) {
@@ -298,6 +349,14 @@ class Image {
         const auto number = read<std::uint32_t>(raw(getter + 1, 4));
         require(number > 10000 && number < 10000000);
         return number;
+    }
+    // Each branch carries only its own asset host format; the program is 101 (global) or
+    // 111 (China), the record that asset host answers at /latest64/<program>.
+    PatchHost patchHost() const {
+        const bool global = hasString("assetcdn.%u.arenanetworks.com"), china = hasString("assetcdn.%u.cgw2.com");
+        require(global != china);
+        return china ? PatchHost{"assetcdn.111.cgw2.com", "/latest64/111", true}
+                     : PatchHost{"assetcdn.101.arenanetworks.com", "/latest64/101", false};
     }
     std::array<std::string, 3> epicClient() const {
         // EOS option fields keep their relative positions when unrelated locals
@@ -344,6 +403,16 @@ class Image {
         resolveAgreement(result);
         resolveNotifications(result);
         if (provider) resolveToken(result);
+        if (provider == 1) {
+            // A build that changed GW2's Steam start still signs in, only without the overlay,
+            // the Steam wallet and Steam Input.
+            try {
+                resolveSteam(result);
+            } catch (const std::runtime_error &) {
+                result.steamApiFile = 0;
+                for (const auto index : {26, 27, 28}) result.anchors[index] = {};
+            }
+        }
         if (provider == 2) {
             // The browser caller changes independently of this token setter.
             // Resolve the setter itself, then prove it writes OpenIdQuery's data.

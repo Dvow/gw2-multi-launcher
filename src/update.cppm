@@ -18,6 +18,7 @@ AppUpdate parseAppRelease(std::string_view body, std::string_view current = appV
 
 namespace gw2 {
 bool appUpdatesEnabled() { return true; }
+bool appUpdatesAlwaysOn() { return false; }
 std::string_view appUpdateNotice() { return {}; }
 AppUpdate parseAppRelease(std::string_view body, std::string_view current) {
     const auto json = nlohmann::json::parse(body);

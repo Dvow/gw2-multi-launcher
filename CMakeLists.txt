@@ -1,11 +1,81 @@
 cmake_minimum_required(VERSION 3.30)
-project(GW2MultiLauncher VERSION 0.7.7 LANGUAGES CXX)
+project(GW2MultiLauncher VERSION 1.2.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+option(GW2_BUILD_TESTS "Build launcher setup tests" OFF)
+option(GW2_BUILD_PACKAGES "Prepare and build installers and Linux packages" ON)
+set(gw2_private_default OFF)
+if(EXISTS "${CMAKE_SOURCE_DIR}/private/CMakeLists.txt")
+  set(gw2_private_default ON) 
+endif()
+option(GW2_ENABLE_PRIVATE "Build the private overlay in private/ when present" ${gw2_private_default})
+if(KX_DISTRIBUTION_READY AND NOT GW2_BUILD_PACKAGES)
+  message(FATAL_ERROR "A distribution-ready setup requires GW2_BUILD_PACKAGES=ON.")
+endif()
+if(MSVC)
+  # Release binaries ship: no RTTI, so class, lambda and module names stay out
+  # of them, and no build-machine prefix in dependency __FILE__ strings. Set
+  # before every target so all modules agree on /GR-.
+  file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}" _gw2_source_dir)
+  add_compile_options(
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<NOT:$<CONFIG:Debug>>>:/GR->"
+    "$<$<NOT:$<CONFIG:Debug>>:/d1trimfile:${_gw2_source_dir}>")
+  add_compile_definitions("$<$<NOT:$<CONFIG:Debug>>:_HAS_STATIC_RTTI=0>")
+endif()
+if(NOT WIN32 AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  message(FATAL_ERROR "The Linux package and Windows game helpers require an x86-64 system.")
+endif()
+if(GW2_BUILD_TESTS)
+  enable_testing()
+  if(WIN32)
+    set(setup_platform windows)
+  else()
+    set(setup_platform linux)
+  endif()
+  add_executable(setup-tests tests/${setup_platform}_setup.cpp)
+  add_executable(recovery-tests tests/launch_recovery.cpp)
+  add_executable(proxy-settings-tests tests/proxy_settings.cpp)
+  add_executable(patch-flags-tests tests/patch_flags.cpp)
+  set_property(TARGET setup-tests recovery-tests proxy-settings-tests patch-flags-tests
+    PROPERTY CXX_SCAN_FOR_MODULES OFF)
+  target_link_libraries(patch-flags-tests PRIVATE nlohmann_json::nlohmann_json)
+  if(WIN32)
+    target_link_libraries(setup-tests PRIVATE advapi32 nlohmann_json::nlohmann_json)
+    target_compile_options(setup-tests PRIVATE /W4 /WX /utf-8)
+    target_compile_options(recovery-tests PRIVATE /W4 /WX)
+    target_compile_options(patch-flags-tests PRIVATE /W4 /WX)
+    target_compile_options(proxy-settings-tests PRIVATE /W4 /WX /utf-8)
+    add_executable(proxy-capture-probe tests/proxy_capture.cpp)
+    set_property(TARGET proxy-capture-probe PROPERTY CXX_SCAN_FOR_MODULES OFF)
+    target_compile_definitions(proxy-capture-probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(proxy-capture-probe PRIVATE /W4 /WX /utf-8)
+    target_link_libraries(proxy-capture-probe PRIVATE advapi32 ws2_32)
+    add_executable(proxy-wine-probe tests/proxy_wine.cpp)
+    set_property(TARGET proxy-wine-probe PROPERTY CXX_SCAN_FOR_MODULES OFF)
+    target_compile_options(proxy-wine-probe PRIVATE /W4 /WX /utf-8)
+    target_link_libraries(proxy-wine-probe PRIVATE ws2_32)
+  endif()
+  add_test(NAME ${setup_platform}-setup COMMAND setup-tests)
+  add_test(NAME launch-recovery COMMAND recovery-tests)
+  add_test(NAME proxy-settings COMMAND proxy-settings-tests)
+  add_test(NAME patch-flags COMMAND patch-flags-tests)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME proxy-relay COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/proxy_relay.py")
+    if(WIN32)
+      add_test(NAME proxy-control COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/proxy_control.py")
+    else()
+      add_test(NAME proxy-linux COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/proxy_linux.py")
+    endif()
+  endif()
+endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+foreach(proxy_script kx_proxy.py kx_proxy_pipe.py kx_proxy_linux.py kx_proxy_tun.py)
+  configure_file("proxy/${proxy_script}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${proxy_script}" COPYONLY)
+endforeach()
 if(NOT CPM_SOURCE_CACHE)
   if(DEFINED ENV{CPM_SOURCE_CACHE} AND NOT "$ENV{CPM_SOURCE_CACHE}" STREQUAL "")
     set(CPM_SOURCE_CACHE "$ENV{CPM_SOURCE_CACHE}" CACHE PATH "Directory to download CPM dependencies")
@@ -84,6 +154,129 @@ foreach(json_header_patch
     file(WRITE "${json_header}" "${json_text}")
   endif()
 endforeach()
+# Launcher text in the user's language (src/ui_text.cppm): ImGui hands every text it measures
+# or draws to a translate hook, except text typed into an input. Each anchor must appear once in
+# the pinned source; a new ImGui that moves one stops the configure here.
+function(gw2_patch_imgui file old new)
+  string(REPLACE "\r\n" "\n" old "${old}") # a CRLF checkout of this file
+  string(REPLACE "\r\n" "\n" new "${new}")
+  set(file "${imgui_SOURCE_DIR}/${file}")
+  file(READ "${file}" text)
+  string(FIND "${text}" "${new}" done)
+  if(NOT done EQUAL -1)
+    return()
+  endif()
+  string(FIND "${text}" "${old}" first)
+  string(FIND "${text}" "${old}" last REVERSE)
+  if(first EQUAL -1 OR NOT first EQUAL last)
+    message(FATAL_ERROR "ImGui text patch: the anchor is not unique in ${file}:\n${old}")
+  endif()
+  string(REPLACE "${old}" "${new}" text "${text}")
+  file(WRITE "${file}" "${text}")
+endfunction()
+gw2_patch_imgui(imgui.h [=[
+    IMGUI_API void          MemFree(void* ptr);
+]=] [=[
+    IMGUI_API void          MemFree(void* ptr);
+
+    // gw2-multi-launcher patch: text translation (src/ui_text.cppm). Text about to be measured
+    // (ImFont::CalcTextSizeA without out_remaining) or drawn (ImFont::RenderText) goes through the
+    // translate function, which may point *text_begin / *text_end at a replacement valid until its
+    // next call. Text drawn between PushNoTranslate and PopNoTranslate (typed input) stays as it is.
+    IMGUI_API void          SetTranslateTextFn(void (*fn)(const char** text_begin, const char** text_end));
+    IMGUI_API void          TranslateText(const char** text_begin, const char** text_end);
+    IMGUI_API void          PushNoTranslate();
+    IMGUI_API void          PopNoTranslate();
+]=])
+gw2_patch_imgui(imgui.cpp [=[
+ImGuiContext*   GImGui = NULL;
+#endif
+]=] [=[
+ImGuiContext*   GImGui = NULL;
+#endif
+
+// gw2-multi-launcher patch: text translation (see SetTranslateTextFn in imgui.h).
+static void   (*GLauncherTranslateText)(const char** text_begin, const char** text_end) = NULL;
+static int      GLauncherNoTranslate = 0;
+void ImGui::SetTranslateTextFn(void (*fn)(const char** text_begin, const char** text_end)) { GLauncherTranslateText = fn; }
+void ImGui::TranslateText(const char** text_begin, const char** text_end)
+{
+    if (GLauncherTranslateText && GLauncherNoTranslate == 0 && *text_begin != *text_end)
+        GLauncherTranslateText(text_begin, text_end);
+}
+void ImGui::PushNoTranslate() { GLauncherNoTranslate++; }
+void ImGui::PopNoTranslate() { IM_ASSERT(GLauncherNoTranslate > 0); GLauncherNoTranslate--; }
+]=])
+gw2_patch_imgui(imgui.cpp [=[
+        text_end_full = FindRenderedTextEnd(text);
+    const ImVec2 text_size = text_size_if_known ? *text_size_if_known : CalcTextSize(text, text_end_full, false, 0.0f);
+]=] [=[
+        text_end_full = FindRenderedTextEnd(text);
+    // gw2-multi-launcher patch: translate the whole text before it is clipped (a part matches nothing).
+    const char* untranslated = text;
+    TranslateText(&text, &text_end_full);
+    if (text != untranslated)
+        text_size_if_known = NULL;
+    const ImVec2 text_size = text_size_if_known ? *text_size_if_known : CalcTextSize(text, text_end_full, false, 0.0f);
+]=])
+gw2_patch_imgui(imgui_draw.cpp [=[
+ImVec2 ImFont::CalcTextSizeA(float size, float max_width, float wrap_width, const char* text_begin, const char* text_end, const char** out_remaining)
+{
+]=] [=[
+ImVec2 ImFont::CalcTextSizeA(float size, float max_width, float wrap_width, const char* text_begin, const char* text_end, const char** out_remaining)
+{
+    if (out_remaining == NULL) // gw2-multi-launcher patch: measure what RenderText draws
+    {
+        if (!text_end)
+            text_end = text_begin + ImStrlen(text_begin);
+        ImGui::TranslateText(&text_begin, &text_end);
+    }
+]=])
+gw2_patch_imgui(imgui_draw.cpp [=[
+const char* text_begin, const char* text_end, float wrap_width, ImDrawTextFlags flags)
+{
+begin:
+]=] [=[
+const char* text_begin, const char* text_end, float wrap_width, ImDrawTextFlags flags)
+{
+    // gw2-multi-launcher patch: text translation, once (not again on the glyph-load retry below).
+    if (!text_end)
+        text_end = text_begin + ImStrlen(text_begin);
+    ImGui::TranslateText(&text_begin, &text_end);
+begin:
+]=])
+gw2_patch_imgui(imgui_widgets.cpp [=[
+    if (g.ActiveId != id && (flags & ImGuiInputTextFlags_ElideLeft) && !render_cursor && !render_selection)
+        draw_pos.x = ImMin(draw_pos.x, frame_bb.Max.x - CalcTextSize(buf_display, NULL).x - style.FramePadding.x);
+]=] [=[
+    if (g.ActiveId != id && (flags & ImGuiInputTextFlags_ElideLeft) && !render_cursor && !render_selection)
+    {
+        if (!is_displaying_hint) PushNoTranslate(); // gw2-multi-launcher patch: typed text is never translated
+        draw_pos.x = ImMin(draw_pos.x, frame_bb.Max.x - CalcTextSize(buf_display, NULL).x - style.FramePadding.x);
+        if (!is_displaying_hint) PopNoTranslate();
+    }
+]=])
+gw2_patch_imgui(imgui_widgets.cpp [=[
+    // Render text
+    if ((is_multiline || (buf_display_end - buf_display) < buf_display_max_length) && (text_col & IM_COL32_A_MASK) && (line_visible_n0 < line_visible_n1))
+        g.Font->RenderText(draw_window->DrawList, g.FontSize,
+            draw_pos - draw_scroll + ImVec2(0.0f, line_visible_n0 * g.FontSize),
+            text_col, clip_rect.AsVec4(),
+            line_index->get_line_begin(buf_display, line_visible_n0),
+            line_index->get_line_end(buf_display, line_visible_n1 - 1),
+            wrap_width, ImDrawTextFlags_WrapKeepBlanks | ImDrawTextFlags_CpuFineClip);
+]=] [=[
+    // Render text
+    if (!is_displaying_hint) PushNoTranslate(); // gw2-multi-launcher patch: typed text is never translated
+    if ((is_multiline || (buf_display_end - buf_display) < buf_display_max_length) && (text_col & IM_COL32_A_MASK) && (line_visible_n0 < line_visible_n1))
+        g.Font->RenderText(draw_window->DrawList, g.FontSize,
+            draw_pos - draw_scroll + ImVec2(0.0f, line_visible_n0 * g.FontSize),
+            text_col, clip_rect.AsVec4(),
+            line_index->get_line_begin(buf_display, line_visible_n0),
+            line_index->get_line_end(buf_display, line_visible_n1 - 1),
+            wrap_width, ImDrawTextFlags_WrapKeepBlanks | ImDrawTextFlags_CpuFineClip);
+    if (!is_displaying_hint) PopNoTranslate();
+]=])
 find_package(OpenGL REQUIRED)
 
 add_library(imgui STATIC
@@ -104,14 +297,17 @@ target_sources(game PUBLIC FILE_SET CXX_MODULES FILES src/game.cppm)
 add_executable(gw2-multi-launcher WIN32)
 target_sources(gw2-multi-launcher PRIVATE src/main.cpp)
 target_sources(gw2-multi-launcher PRIVATE FILE_SET CXX_MODULES FILES
-  src/data_folder.cppm src/ui_surface.cppm src/app_extension.cppm
+  src/data_folder.cppm src/ui_surface.cppm src/app_extension.cppm src/ui_text.cppm
   src/platform.cppm src/accounts.cppm src/epic.cppm src/session.cppm src/update_common.cppm src/app.cppm src/ui.cppm)
 target_compile_definitions(gw2-multi-launcher PRIVATE GW2_APP_VERSION="${PROJECT_VERSION}")
 target_include_directories(gw2-multi-launcher PRIVATE "${CMAKE_BINARY_DIR}")
 target_link_libraries(gw2-multi-launcher PRIVATE game imgui nlohmann_json::nlohmann_json)
 
 set(gw2_app_icon "")
-if(EXISTS "${CMAKE_SOURCE_DIR}/private/Icon.cmake")
+if(GW2_ENABLE_PRIVATE)
+  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/private/CMakeLists.txt")
+    message(FATAL_ERROR "GW2_ENABLE_PRIVATE needs the private/ overlay. Use a Public preset.")
+  endif()
   include("${CMAKE_SOURCE_DIR}/private/Icon.cmake")
 endif()
 if(NOT GW2_PRODUCT_NAME)
@@ -136,7 +332,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/release-title.txt" "${GW2_RELEASE_TITLE}\n")
 set_target_properties(gw2-multi-launcher PROPERTIES OUTPUT_NAME "${GW2_PROGRAM_FILE}")
 target_compile_definitions(gw2-multi-launcher PRIVATE GW2_PROGRAM_FILE="${GW2_PROGRAM_FILE}" GW2_APP_ID="${GW2_APP_ID}"
   GW2_HELPER_MAGIC=${GW2_HELPER_MAGIC})
-if(NOT gw2_app_icon)
+if(WIN32 AND NOT gw2_app_icon)
   configure_file(src/icons/gw2-multi-launcher.png
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${GW2_PROGRAM_FILE}.png" COPYONLY)
 endif()
@@ -256,8 +452,13 @@ if (-not ('Gw2ShellNotify' -as [type])) { Add-Type -TypeDefinition $signature }
   if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Use MSVC x64 for the Windows native bridge.")
   endif()
-  target_link_libraries(gw2-multi-launcher PRIVATE crypt32 bcrypt winhttp shell32 ole32 user32)
+  target_link_libraries(gw2-multi-launcher PRIVATE crypt32 bcrypt winhttp shell32 ole32 user32 advapi32)
+  # MinHook 1.3.4 declares cmake_minimum_required(VERSION 3.0...3.5), which
+  # CMake 4 reports as deprecated (< 3.10). Its plain C library builds the same
+  # under 3.10 policies.
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
   add_subdirectory(${minhook_SOURCE_DIR} ${minhook_BINARY_DIR} EXCLUDE_FROM_ALL)
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
   add_library(GW2MultiLauncher.Native SHARED)
   target_sources(GW2MultiLauncher.Native PRIVATE FILE_SET CXX_MODULES FILES native/Bridge.cppm)
   set_target_properties(GW2MultiLauncher.Native PROPERTIES OUTPUT_NAME "${GW2_PROGRAM_FILE}.Native")
@@ -266,16 +467,22 @@ if (-not ('Gw2ShellNotify' -as [type])) { Add-Type -TypeDefinition $signature }
   add_executable(GW2MultiLauncher.Host WIN32)
   target_sources(GW2MultiLauncher.Host PRIVATE FILE_SET CXX_MODULES FILES native/Host.cppm)
   set_target_properties(GW2MultiLauncher.Host PROPERTIES OUTPUT_NAME "${GW2_PROGRAM_FILE}.Host")
-  target_link_libraries(GW2MultiLauncher.Host PRIVATE game GW2MultiLauncher.Native user32 bcrypt)
+  target_link_libraries(GW2MultiLauncher.Host PRIVATE game GW2MultiLauncher.Native nlohmann_json::nlohmann_json
+    user32 bcrypt advapi32 ws2_32 shell32)
   target_sources(GW2MultiLauncher.Host PRIVATE "${CMAKE_BINARY_DIR}/icon.rc" "${CMAKE_BINARY_DIR}/icon.ico")
   target_link_options(GW2MultiLauncher.Host PRIVATE /ENTRY:mainCRTStartup)
   set(native_targets GW2MultiLauncher.Native GW2MultiLauncher.Host)
+  # Building the launcher builds the helpers it starts, so it can be debugged directly.
+  add_dependencies(gw2-multi-launcher ${native_targets})
   target_compile_definitions(GW2MultiLauncher.Host PRIVATE GW2_HELPER_MAGIC=${GW2_HELPER_MAGIC})
   target_compile_definitions(GW2MultiLauncher.Native PRIVATE GW2_PACKET_MAGIC=${GW2_PACKET_MAGIC})
   if(GW2_NATIVE_CHANNEL)
     foreach(target IN LISTS native_targets)
       target_compile_definitions(${target} PRIVATE "GW2_NATIVE_CHANNEL_W=L\"${GW2_NATIVE_CHANNEL}\"")
     endforeach()
+  endif()
+  if(GW2_RUNTIME_FOLDER)
+    target_compile_definitions(GW2MultiLauncher.Host PRIVATE "GW2_RUNTIME_FOLDER_W=L\"${GW2_RUNTIME_FOLDER}\"")
   endif()
   if(GW2_NATIVE_EXECUTE)
     target_compile_definitions(GW2MultiLauncher.Host PRIVATE GW2_NATIVE_EXECUTE=${GW2_NATIVE_EXECUTE})
@@ -303,6 +510,8 @@ if (-not ('Gw2ShellNotify' -as [type])) { Add-Type -TypeDefinition $signature }
     target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_options(${target} PRIVATE /guard:cf /DYNAMICBASE /NXCOMPAT)
   endforeach()
+  # Module consumers must agree on the CRT macros these security flags define.
+  target_compile_options(game INTERFACE /guard:cf /sdl)
 else()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
@@ -313,18 +522,53 @@ else()
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endforeach()
   set(GW2_NATIVE_DIR "" CACHE PATH "Directory containing matching Windows helper and bridge built from this source")
-  foreach(file "${GW2_PROGRAM_FILE}.Host.exe" "${GW2_PROGRAM_FILE}.Native.dll")
+  foreach(file "${GW2_PROGRAM_FILE}.Host.exe" "${GW2_PROGRAM_FILE}.Native.dll" "${GW2_PROGRAM_FILE}.png")
     if(NOT EXISTS "${GW2_NATIVE_DIR}/${file}")
       message(FATAL_ERROR "Set GW2_NATIVE_DIR to a matching Windows build's bin directory; missing ${file}.")
     endif()
     configure_file("${GW2_NATIVE_DIR}/${file}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${file}" COPYONLY)
   endforeach()
+  file(GLOB net_dlls "${GW2_NATIVE_DIR}/net/*.dll")
+  foreach(net_dll IN LISTS net_dlls)
+    get_filename_component(net_name "${net_dll}" NAME)
+    configure_file("${net_dll}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/net/${net_name}" COPYONLY)
+  endforeach()
 endif()
 
 set(gw2_update_source "${CMAKE_SOURCE_DIR}/src/update.cppm")
-if(EXISTS "${CMAKE_SOURCE_DIR}/private/CMakeLists.txt")
+set(GW2_BUILD_SUMMARY "Launcher updates: public GitHub releases")
+if(GW2_ENABLE_PRIVATE)
   add_subdirectory(private "${CMAKE_BINARY_DIR}/gw2-private")
 endif()
 target_sources(gw2-multi-launcher PRIVATE FILE_SET CXX_MODULES FILES "${gw2_update_source}")
 
+if(GW2_BUILD_TESTS AND WIN32)
+  # Exercise the real catalog, Windows encryption and launch serialization in an
+  # isolated temporary folder, without a game or any distribution credentials.
+  add_executable(proxy-storage-tests tests/proxy_storage.cpp)
+  target_sources(proxy-storage-tests PRIVATE FILE_SET CXX_MODULES FILES
+    src/data_folder.cppm src/platform.cppm src/accounts.cppm src/session.cppm
+    src/update_common.cppm src/update.cppm)
+  target_compile_definitions(proxy-storage-tests PRIVATE GW2_APP_VERSION="${PROJECT_VERSION}"
+    GW2_PROGRAM_FILE="ProxyStorageTest" UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(proxy-storage-tests PRIVATE /W4 /WX /utf-8)
+  target_link_libraries(proxy-storage-tests PRIVATE game SDL3::SDL3-static nlohmann_json::nlohmann_json
+    crypt32 bcrypt winhttp shell32 ole32 user32 advapi32)
+  add_test(NAME proxy-storage COMMAND proxy-storage-tests)
+  # Resolves real game executables from GW2_TEST_GAME_EXES (a folder or one exe); skipped without.
+  add_executable(game-layout-tests tests/game_layout.cpp)
+  target_compile_options(game-layout-tests PRIVATE /W4 /WX /utf-8)
+  target_link_libraries(game-layout-tests PRIVATE game)
+  add_test(NAME game-layout COMMAND game-layout-tests)
+  set_tests_properties(game-layout PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 include(Package.cmake)
+# What this configuration builds, with input paths but never secret values.
+list(JOIN GW2_BUILD_SUMMARY "\n  " gw2_summary)
+if(GW2_BUILD_PACKAGES)
+  set(gw2_package_summary "Installer: ${setup_file}")
+else()
+  set(gw2_package_summary "Packaging: disabled")
+endif()
+message(STATUS "${GW2_PRODUCT_NAME} ${CMAKE_BUILD_TYPE}\n  ${gw2_summary}\n  Programs: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}\n  ${gw2_package_summary}")
